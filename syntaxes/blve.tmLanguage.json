@@ -10,25 +10,25 @@
     },
     {
       "match": "@(input|use)",
-      "name": "keyword.control.yourlanguage"
+      "name": "keyword.control.blve"
     },
     {
       "match": "\\b(?i:string)\\b",
-      "name": "storage.type.string.yourlanguage"
+      "name": "storage.type.string.blve"
     },
     {
       "match": "\"[^\"]*\"",
-      "name": "string.quoted.double.yourlanguage"
+      "name": "string.quoted.double.blve"
     },
     {
       "match": "'[^']*'",
-      "name": "string.quoted.double.yourlanguage"
+      "name": "string.quoted.double.blve"
     },
     {
       "begin": "(^html:\\s*$)",
       "beginCaptures": {
         "1": {
-          "name": "meta.tag.yourlanguage"
+          "name": "meta.tag.blve"
         }
       },
       "end": "^(?!\\s)",
@@ -41,7 +41,7 @@
     {
       "begin": "^html:\\s*$",
       "end": "^(?!\\s)",
-      "name": "markup.raw.block.yourlanguage",
+      "name": "markup.raw.block.blve",
       "patterns": [
         {
           "include": "text.html.basic"
@@ -51,7 +51,7 @@
     {
       "begin": "^script:\\s*$",
       "end": "^(?!\\s)",
-      "name": "source.ts.yourlanguage",
+      "name": "source.ts.blve",
       "patterns": [
         {
           "include": "source.ts"
@@ -61,7 +61,7 @@
     {
       "begin": "^style:\\s*$",
       "end": "^(?!\\s)",
-      "name": "source.css.yourlanguage",
+      "name": "source.css.blve",
       "patterns": [
         {
           "include": "source.css"

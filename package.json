@@ -3,6 +3,7 @@
   "displayName": "Blve",
   "description": "VSCode Extension for Blve",
   "version": "0.0.1",
+  "publisher": "blvedev",
   "engines": {
     "vscode": "^1.78.0"
   },
@@ -10,16 +11,25 @@
     "Programming Languages"
   ],
   "contributes": {
-    "languages": [{
-      "id": "blve",
-      "aliases": ["Blve", "blve"],
-      "extensions": [".blv"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "blve",
-      "scopeName": "source.blve",
-      "path": "./syntaxes/blve.tmLanguage.json"
-    }]
+    "languages": [
+      {
+        "id": "blve",
+        "aliases": [
+          "Blve",
+          "blve"
+        ],
+        "extensions": [
+          ".blv"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "blve",
+        "scopeName": "source.blve",
+        "path": "./syntaxes/blve.tmLanguage.json"
+      }
+    ]
   }
 }
