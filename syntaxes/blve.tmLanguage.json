@@ -1,0 +1,94 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Blve",
+  "patterns": [
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "match": "@(input|use)",
+      "name": "keyword.control.yourlanguage"
+    },
+    {
+      "match": "\\b(?i:string)\\b",
+      "name": "storage.type.string.yourlanguage"
+    },
+    {
+      "match": "\"[^\"]*\"",
+      "name": "string.quoted.double.yourlanguage"
+    },
+    {
+      "match": "'[^']*'",
+      "name": "string.quoted.double.yourlanguage"
+    },
+    {
+      "begin": "(^html:\\s*$)",
+      "beginCaptures": {
+        "1": {
+          "name": "meta.tag.yourlanguage"
+        }
+      },
+      "end": "^(?!\\s)",
+      "patterns": [
+        {
+          "include": "text.html.basic"
+        }
+      ]
+    },
+    {
+      "begin": "^html:\\s*$",
+      "end": "^(?!\\s)",
+      "name": "markup.raw.block.yourlanguage",
+      "patterns": [
+        {
+          "include": "text.html.basic"
+        }
+      ]
+    },
+    {
+      "begin": "^script:\\s*$",
+      "end": "^(?!\\s)",
+      "name": "source.ts.yourlanguage",
+      "patterns": [
+        {
+          "include": "source.ts"
+        }
+      ]
+    },
+    {
+      "begin": "^style:\\s*$",
+      "end": "^(?!\\s)",
+      "name": "source.css.yourlanguage",
+      "patterns": [
+        {
+          "include": "source.css"
+        }
+      ]
+    }
+  ],
+  "repository": {
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.blve",
+          "match": "\\b(if|while|for|return)\\b"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.blve",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.blve",
+          "match": "\\\\."
+        }
+      ]
+    }
+  },
+  "scopeName": "source.blve"
+}

@@ -1,0 +1,25 @@
+{
+  "name": "blve",
+  "displayName": "Blve",
+  "description": "VSCode Extension for Blve",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.78.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [{
+      "id": "blve",
+      "aliases": ["Blve", "blve"],
+      "extensions": [".blv"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "blve",
+      "scopeName": "source.blve",
+      "path": "./syntaxes/blve.tmLanguage.json"
+    }]
+  }
+}
