@@ -34,6 +34,14 @@
       "end": "^(?!\\s)",
       "patterns": [
         {
+          "match": "<(/?)(\\w+)([^>]*)>",
+          "captures": {
+            "2": {
+              "name": "keyword.control.yourlanguage"
+            }
+          }
+        },
+        {
           "include": "text.html.basic"
         }
       ]
