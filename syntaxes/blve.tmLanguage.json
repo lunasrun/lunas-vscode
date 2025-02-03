@@ -34,15 +34,17 @@
       "end": "^(?!\\s)",
       "patterns": [
         {
-          "match": "<(/?)(\\w+)([^>]*)>",
-          "captures": {
-            "2": {
-              "name": "keyword.control.yourlanguage"
-            }
-          }
+          "include": "text.html.blve"
         },
         {
-          "include": "text.html.basic"
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "contentName": "source.ts",
+          "patterns": [
+            {
+              "include": "source.ts"
+            }
+          ]
         }
       ]
     },
@@ -52,7 +54,7 @@
       "name": "markup.raw.block.blve",
       "patterns": [
         {
-          "include": "text.html.basic"
+          "include": "text.html.blve"
         }
       ]
     },

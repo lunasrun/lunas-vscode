@@ -22,6 +22,9 @@
           ".blv"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "blh"
       }
     ],
     "grammars": [
@@ -29,6 +32,11 @@
         "language": "blve",
         "scopeName": "source.blve",
         "path": "./syntaxes/blve.tmLanguage.json"
+      },
+      {
+        "language": "blh",
+        "scopeName": "text.html.blve",
+        "path": "./syntaxes/text.html.blve.tmLanguage.json"
       }
     ]
   }
