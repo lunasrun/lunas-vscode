@@ -2,15 +2,24 @@
   "name": "lunas",
   "displayName": "Lunas",
   "description": "VSCode Extension for Lunas",
-  "version": "0.0.1",
+  "version": "0.0.1-beta.1",
   "publisher": "lunasdev",
   "engines": {
     "vscode": "^1.78.0"
   },
+  "scripts": {
+    "package": "tsc && vsce package"
+  },
   "categories": [
     "Programming Languages"
   ],
+  "main": "./dist/extension.js",
   "contributes": {
+    "configurationDefaults": {
+      "[lunas]": {
+        "editor.defaultFormatter": "lunasdev.lunas"
+      }
+    },
     "languages": [
       {
         "id": "lunas",
@@ -38,6 +47,17 @@
         "scopeName": "text.html.lunas",
         "path": "./syntaxes/text.html.lunas.tmLanguage.json"
       }
+    ],
+    "documentFormatting": [
+      {
+        "language": "lunas"
+      }
     ]
+  },
+  "dependencies": {
+    "lunas-formatter": "^0.0.1-beta.2"
+  },
+  "devDependencies": {
+    "vscode": "^1.1.37"
   }
 }
