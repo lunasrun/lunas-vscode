@@ -19,7 +19,7 @@
           "lunas"
         ],
         "extensions": [
-          ".blv"
+          ".lun"
         ],
         "configuration": "./language-configuration.json"
       },
