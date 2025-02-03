@@ -45,7 +45,7 @@
     "attribute": {
       "patterns": [
         {
-          "begin": "(@|:)(\\w+=)(\")",
+          "begin": "(@|:|::)(\\w+=)(\")",
           "beginCaptures": {
             "2": {
               "name": "entity.other.attribute-name.html"
