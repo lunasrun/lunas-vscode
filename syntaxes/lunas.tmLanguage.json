@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-  "name": "Blve",
+  "name": "Lunas",
   "patterns": [
     {
       "include": "#keywords"
@@ -10,31 +10,31 @@
     },
     {
       "match": "@(input|use)",
-      "name": "keyword.control.blve"
+      "name": "keyword.control.lunas"
     },
     {
       "match": "\\b(?i:string)\\b",
-      "name": "storage.type.string.blve"
+      "name": "storage.type.string.lunas"
     },
     {
       "match": "\"[^\"]*\"",
-      "name": "string.quoted.double.blve"
+      "name": "string.quoted.double.lunas"
     },
     {
       "match": "'[^']*'",
-      "name": "string.quoted.double.blve"
+      "name": "string.quoted.double.lunas"
     },
     {
       "begin": "(^html:\\s*$)",
       "beginCaptures": {
         "1": {
-          "name": "meta.tag.blve"
+          "name": "meta.tag.lunas"
         }
       },
       "end": "^(?!\\s)",
       "patterns": [
         {
-          "include": "text.html.blve"
+          "include": "text.html.lunas"
         },
         {
           "begin": "\\$\\{",
@@ -51,17 +51,17 @@
     {
       "begin": "^html:\\s*$",
       "end": "^(?!\\s)",
-      "name": "markup.raw.block.blve",
+      "name": "markup.raw.block.lunas",
       "patterns": [
         {
-          "include": "text.html.blve"
+          "include": "text.html.lunas"
         }
       ]
     },
     {
       "begin": "^script:\\s*$",
       "end": "^(?!\\s)",
-      "name": "source.ts.blve",
+      "name": "source.ts.lunas",
       "patterns": [
         {
           "include": "source.ts"
@@ -71,7 +71,7 @@
     {
       "begin": "^style:\\s*$",
       "end": "^(?!\\s)",
-      "name": "source.css.blve",
+      "name": "source.css.lunas",
       "patterns": [
         {
           "include": "source.css"
@@ -83,22 +83,22 @@
     "keywords": {
       "patterns": [
         {
-          "name": "keyword.control.blve",
+          "name": "keyword.control.lunas",
           "match": "\\b(if|while|for|return)\\b"
         }
       ]
     },
     "strings": {
-      "name": "string.quoted.double.blve",
+      "name": "string.quoted.double.lunas",
       "begin": "\"",
       "end": "\"",
       "patterns": [
         {
-          "name": "constant.character.escape.blve",
+          "name": "constant.character.escape.lunas",
           "match": "\\\\."
         }
       ]
     }
   },
-  "scopeName": "source.blve"
+  "scopeName": "source.lunas"
 }

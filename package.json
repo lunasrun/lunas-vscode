@@ -1,9 +1,9 @@
 {
-  "name": "blve",
-  "displayName": "Blve",
-  "description": "VSCode Extension for Blve",
+  "name": "lunas",
+  "displayName": "Lunas",
+  "description": "VSCode Extension for Lunas",
   "version": "0.0.1",
-  "publisher": "blvedev",
+  "publisher": "lunasdev",
   "engines": {
     "vscode": "^1.78.0"
   },
@@ -13,10 +13,10 @@
   "contributes": {
     "languages": [
       {
-        "id": "blve",
+        "id": "lunas",
         "aliases": [
-          "Blve",
-          "blve"
+          "Lunas",
+          "lunas"
         ],
         "extensions": [
           ".blv"
@@ -29,14 +29,14 @@
     ],
     "grammars": [
       {
-        "language": "blve",
-        "scopeName": "source.blve",
-        "path": "./syntaxes/blve.tmLanguage.json"
+        "language": "lunas",
+        "scopeName": "source.lunas",
+        "path": "./syntaxes/lunas.tmLanguage.json"
       },
       {
         "language": "blh",
-        "scopeName": "text.html.blve",
-        "path": "./syntaxes/text.html.blve.tmLanguage.json"
+        "scopeName": "text.html.lunas",
+        "path": "./syntaxes/text.html.lunas.tmLanguage.json"
       }
     ]
   }
