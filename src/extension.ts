@@ -1,27 +1,41 @@
 import * as vscode from "vscode";
-import { format } from "lunas-formatter";
+import * as path from "path";
+import {
+  LanguageClient,
+  LanguageClientOptions,
+  ServerOptions,
+  TransportKind,
+} from "vscode-languageclient/node";
+import { activateFormatter } from "./formatter";
+
+let client: LanguageClient;
 
 export function activate(context: vscode.ExtensionContext) {
-  let disposable = vscode.languages.registerDocumentFormattingEditProvider(
-    "lunas",
-    {
-      async provideDocumentFormattingEdits(
-        document: vscode.TextDocument,
-      ): Promise<vscode.TextEdit[]> {
-        const fullText = document.getText(); // ドキュメントの全テキスト取得
-        const formattedText = await format(fullText); // フォーマット関数を適用
+  // LSP サーバーのパスを指定
+  const serverModule = context.asAbsolutePath(path.join("server", "server.js"));
 
-        const fullRange = new vscode.Range(
-          document.positionAt(0),
-          document.positionAt(fullText.length),
-        );
+  const serverOptions: ServerOptions = {
+    run: { module: serverModule, transport: TransportKind.ipc },
+    debug: { module: serverModule, transport: TransportKind.ipc },
+  };
 
-        return [vscode.TextEdit.replace(fullRange, formattedText)];
-      },
-    },
+  const clientOptions: LanguageClientOptions = {
+    documentSelector: [{ scheme: "file", language: "lunas" }],
+  };
+
+  // LSP クライアントを起動
+  client = new LanguageClient(
+    "lunasLanguageServer",
+    "Lunas Language Server",
+    serverOptions,
+    clientOptions,
   );
+  client.start();
 
-  context.subscriptions.push(disposable);
+  // フォーマット機能を有効化
+  activateFormatter(context);
 }
 
-export function deactivate() {}
+export function deactivate(): Thenable<void> | undefined {
+  return client ? client.stop() : undefined;
+}
