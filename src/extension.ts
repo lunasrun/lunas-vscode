@@ -12,7 +12,7 @@ let client: LanguageClient;
 
 export function activate(context: vscode.ExtensionContext) {
   // LSP サーバーのパスを指定
-  const serverModule = context.asAbsolutePath(path.join("server", "server.js"));
+  const serverModule = context.asAbsolutePath(path.join("dist", "server.js"));
 
   const serverOptions: ServerOptions = {
     run: { module: serverModule, transport: TransportKind.ipc },
@@ -31,6 +31,8 @@ export function activate(context: vscode.ExtensionContext) {
     clientOptions,
   );
   client.start();
+
+  console.log("Congratulations, your extension 'lunas' is now active! V5");
 
   // フォーマット機能を有効化
   activateFormatter(context);
