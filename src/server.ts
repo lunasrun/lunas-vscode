@@ -8,25 +8,30 @@ import {
   CompletionItemKind,
   Diagnostic,
   DiagnosticSeverity,
+  Hover,
 } from "vscode-languageserver/node";
 
 import { TextDocument } from "vscode-languageserver-textdocument";
 import * as ts from "typescript";
-import * as fs from "fs";
 import * as path from "path";
 
 // LSP の接続を作成
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
+const INDENT_SIZE = 2;
+let scriptVersion = 0; // スクリプトのバージョン管理用
+
 connection.onInitialize((params: InitializeParams) => {
   return {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       completionProvider: { resolveProvider: true },
+      hoverProvider: true, // ホバー機能を有効化
     },
   };
 });
+
 // `.lun` の `script:` を抽出
 function extractScript(text: string): { script: string; startLine: number } {
   const scriptMatch = text.match(/script:\s*\n([\s\S]*?)(?:\n\s*style:|$)/);
@@ -34,14 +39,10 @@ function extractScript(text: string): { script: string; startLine: number } {
     return { script: "", startLine: 0 };
   }
 
-  // `script:` の開始位置を取得
   const scriptStart = text.indexOf("script:");
   const startLine = text.substring(0, scriptStart).split("\n").length;
 
-  // スクリプトの内容を取得
   let scriptLines = scriptMatch[1].split("\n");
-
-  // **スペース 2 個のインデントを削除**
   scriptLines = scriptLines.map((line) =>
     line.startsWith("  ") ? line.slice(2) : line,
   );
@@ -57,21 +58,20 @@ let tempScriptContent = ""; // 最新のスクリプトを保存
 // TypeScript 言語サービス
 const tsHost: ts.LanguageServiceHost = {
   getScriptFileNames: () => [tempFilePath],
-  getScriptVersion: () => "1",
+  getScriptVersion: () => scriptVersion.toString(), // バージョンを変更
   getScriptSnapshot: (fileName) =>
     fileName === tempFilePath
-      ? ts.ScriptSnapshot.fromString(tempScriptContent)
+      ? ts.ScriptSnapshot.fromString(tempScriptContent) // 最新の内容を返す
       : undefined,
   getCurrentDirectory: () => process.cwd(),
   getCompilationSettings: () => ({
     module: ts.ModuleKind.CommonJS,
     target: ts.ScriptTarget.ESNext,
-    strict: true, // 型エラーを厳しくチェック
+    strict: true,
   }),
   getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-  readFile: (fileName) => {
-    return fileName === tempFilePath ? tempScriptContent : undefined;
-  },
+  readFile: (fileName) =>
+    fileName === tempFilePath ? tempScriptContent : undefined,
   fileExists: (fileName) => fileName === tempFilePath,
 };
 
@@ -82,22 +82,19 @@ documents.onDidChangeContent((change) => {
   const text = change.document.getText();
   const { script, startLine } = extractScript(text);
 
-  tempScriptContent = script; // スクリプトをメモリに保存
+  if (tempScriptContent !== script) {
+    tempScriptContent = script;
+    scriptVersion++; // バージョンを更新
+  }
 
-  // console.log("Extracted Script:");
-  // console.log(script);
+  console.log("Updated Script Content:");
+  console.log(tempScriptContent);
 
-  // TypeScript の診断
   const diagnostics: Diagnostic[] = [];
-
-  // **構文エラー (Syntax Errors) を取得**
   const syntaxDiagnostics = tsService.getSyntacticDiagnostics(tempFilePath);
-
-  // **型エラー (Type Errors) を取得**
   const semanticDiagnostics = tsService.getSemanticDiagnostics(tempFilePath);
 
   const allDiagnostics = [...syntaxDiagnostics, ...semanticDiagnostics];
-
   allDiagnostics.forEach((tsDiag) => {
     if (tsDiag.file && tsDiag.start !== undefined) {
       const start = tsDiag.file.getLineAndCharacterOfPosition(tsDiag.start);
@@ -105,19 +102,17 @@ documents.onDidChangeContent((change) => {
         tsDiag.start + (tsDiag.length || 0),
       );
 
-      // エラー行を補正する際、`startLine` を加算して調整
-      const adjustedStartLine = start.line + startLine;
-      const adjustedEndLine = end.line + startLine;
-
-      // console.log(
-      //   `Mapped Error: ${adjustedStartLine}, ${start.character} -> ${adjustedEndLine}, ${end.character}`,
-      // );
-
       diagnostics.push({
         severity: DiagnosticSeverity.Error,
         range: {
-          start: { line: adjustedStartLine, character: start.character + 2 },
-          end: { line: adjustedEndLine, character: end.character + 2 },
+          start: {
+            line: start.line + startLine,
+            character: start.character + INDENT_SIZE,
+          },
+          end: {
+            line: end.line + startLine,
+            character: end.character + INDENT_SIZE,
+          },
         },
         message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
         source: "Lunas TS",
@@ -125,59 +120,31 @@ documents.onDidChangeContent((change) => {
     }
   });
 
+  console.log("Debug: Diagnostics length: ", diagnostics.length);
+
   connection.sendDiagnostics({ uri: change.document.uri, diagnostics });
 });
 
-// TypeScript の補完を提供
-connection.onCompletion(() => {
-  const completions: CompletionItem[] = [];
-  const program = tsService.getProgram();
-  if (program) {
-    const sourceFile = program.getSourceFile(tempFilePath);
-    if (sourceFile) {
-      const position = tempScriptContent.length;
-      const completionsInfo = tsService.getCompletionsAtPosition(
-        tempFilePath,
-        position,
-        {},
-      );
-      if (completionsInfo) {
-        completionsInfo.entries.forEach((entry) => {
-          completions.push({
-            label: entry.name,
-            kind: CompletionItemKind.Function,
-          });
-        });
-      }
-    }
-  }
-  return completions;
-});
-
 // **ホバーで型情報を提供**
-connection.onHover((params) => {
-  // console.log("hover Xparams", params);
+connection.onHover((params): Hover | null => {
+  console.log("Debug: Hover Requested");
   const doc = documents.get(params.textDocument.uri);
-  // console.log("Xdoc", doc);
   if (!doc) return null;
 
   const text = doc.getText();
   const { script, startLine } = extractScript(text);
 
-  const position = doc.offsetAt(params.position); // ホバー位置のオフセット
-  const scriptOffset = position - doc.getText().indexOf("script:") - 8; // スクリプト内のオフセット調整
+  const position = doc.offsetAt(params.position);
+  const scriptOffset = position - doc.getText().indexOf("script:") - 8;
 
-  if (scriptOffset < 0 || scriptOffset >= script.length) return null; // 範囲外なら無視
+  if (scriptOffset < 0 || scriptOffset >= script.length) return null;
 
   const quickInfo = tsService.getQuickInfoAtPosition(
     tempFilePath,
     scriptOffset,
   );
-  // console.log("XquickInfo", scriptOffset);
-  // console.log(quickInfo);
   if (!quickInfo) return null;
 
-  // TypeScript の型情報を整形
   const displayParts =
     quickInfo.displayParts?.map((part) => part.text).join("") ?? "";
   const documentation =
