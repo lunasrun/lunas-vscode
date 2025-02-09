@@ -64,7 +64,6 @@ function extractScript(text: string): {
 
 // `.ts` 用の仮ファイル
 const tempFilePath = path.join(__dirname, "temp.ts");
-
 let tempScriptContent = ""; // 最新のスクリプトを保存
 
 // TypeScript 言語サービス
@@ -80,14 +79,24 @@ const tsHost: ts.LanguageServiceHost = {
     module: ts.ModuleKind.CommonJS,
     target: ts.ScriptTarget.ESNext,
     strict: true,
-    lib: ["ESNext", "DOM", "jsdom", "dom"], // 標準ライブラリを追加
+    lib: [
+      "lib.dom.d.ts",
+      // "/Users/tatsuru/Documents/Program/lunas-proj/lunas-vscode/lib.dom.d.ts",
+    ], // 標準ライブラリを追加
     allowJs: true, // JavaScript も許可
     noEmit: true, // ファイル出力しない
   }),
   getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
   readFile: (fileName) =>
     fileName === tempFilePath ? tempScriptContent : undefined,
-  fileExists: (fileName) => fileName === tempFilePath,
+  fileExists: (fileName) => {
+    if (fileName === tempFilePath) {
+      return true;
+    }
+    const exists = ts.sys.fileExists(fileName);
+    console.log(`[DEBUG] fileExists("${fileName}") → ${exists}`);
+    return exists;
+  },
 };
 
 const tsService = ts.createLanguageService(tsHost);
@@ -178,6 +187,12 @@ connection.onHover((params): Hover | null => {
     },
   };
 });
+
+console.log(
+  "Default Lib File Path:",
+  ts.getDefaultLibFilePath(tsHost.getCompilationSettings()),
+);
+console.log(tsService.getCompilerOptionsDiagnostics());
 
 // LSP の接続を開始
 documents.listen(connection);
