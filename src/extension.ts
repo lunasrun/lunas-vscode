@@ -32,7 +32,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
   client.start();
 
-  console.log("Congratulations, your extension 'lunas' is now active! V5");
+  console.log("Congratulations, your extension 'lunas' is now active!");
 
   // フォーマット機能を有効化
   activateFormatter(context);

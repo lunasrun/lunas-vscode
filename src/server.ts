@@ -14,6 +14,10 @@ import {
 import { TextDocument } from "vscode-languageserver-textdocument";
 import * as ts from "typescript";
 import * as path from "path";
+import {
+  getLocationInBlock,
+  textLocationVisualizer,
+} from "./utils/text-location";
 
 // LSP の接続を作成
 const connection = createConnection(ProposedFeatures.all);
@@ -33,10 +37,14 @@ connection.onInitialize((params: InitializeParams) => {
 });
 
 // `.lun` の `script:` を抽出
-function extractScript(text: string): { script: string; startLine: number } {
+function extractScript(text: string): {
+  script: string;
+  startLine: number;
+  endLine: number;
+} {
   const scriptMatch = text.match(/script:\s*\n([\s\S]*?)(?:\n\s*style:|$)/);
   if (!scriptMatch) {
-    return { script: "", startLine: 0 };
+    return { script: "", startLine: 0, endLine: 0 };
   }
 
   const scriptStart = text.indexOf("script:");
@@ -47,7 +55,11 @@ function extractScript(text: string): { script: string; startLine: number } {
     line.startsWith("  ") ? line.slice(2) : line,
   );
 
-  return { script: scriptLines.join("\n"), startLine };
+  return {
+    script: scriptLines.join("\n"),
+    startLine,
+    endLine: startLine + scriptLines.length - 1,
+  };
 }
 
 // `.ts` 用の仮ファイル
@@ -68,6 +80,9 @@ const tsHost: ts.LanguageServiceHost = {
     module: ts.ModuleKind.CommonJS,
     target: ts.ScriptTarget.ESNext,
     strict: true,
+    lib: ["ESNext", "DOM", "jsdom", "dom"], // 標準ライブラリを追加
+    allowJs: true, // JavaScript も許可
+    noEmit: true, // ファイル出力しない
   }),
   getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
   readFile: (fileName) =>
@@ -86,9 +101,6 @@ documents.onDidChangeContent((change) => {
     tempScriptContent = script;
     scriptVersion++; // バージョンを更新
   }
-
-  console.log("Updated Script Content:");
-  console.log(tempScriptContent);
 
   const diagnostics: Diagnostic[] = [];
   const syntaxDiagnostics = tsService.getSyntacticDiagnostics(tempFilePath);
@@ -120,29 +132,38 @@ documents.onDidChangeContent((change) => {
     }
   });
 
-  console.log("Debug: Diagnostics length: ", diagnostics.length);
-
   connection.sendDiagnostics({ uri: change.document.uri, diagnostics });
 });
 
 // **ホバーで型情報を提供**
 connection.onHover((params): Hover | null => {
-  console.log("Debug: Hover Requested");
+  const currentDate = new Date().toLocaleTimeString();
   const doc = documents.get(params.textDocument.uri);
   if (!doc) return null;
 
   const text = doc.getText();
-  const { script, startLine } = extractScript(text);
+  const { script, startLine, endLine } = extractScript(text);
 
-  const position = doc.offsetAt(params.position);
-  const scriptOffset = position - doc.getText().indexOf("script:") - 8;
-
-  if (scriptOffset < 0 || scriptOffset >= script.length) return null;
-
-  const quickInfo = tsService.getQuickInfoAtPosition(
-    tempFilePath,
-    scriptOffset,
+  const localPosition = getLocationInBlock(
+    text,
+    startLine,
+    endLine,
+    INDENT_SIZE,
+    {
+      type: "line-column",
+      line: params.position.line,
+      column: params.position.character,
+    },
   );
+  if (!localPosition) return null;
+
+  const localOffset = localPosition.localPosition.offset;
+
+  // console.log(
+  //   textLocationVisualizer(script, { type: "offset", offset: localOffset }),
+  // );
+
+  const quickInfo = tsService.getQuickInfoAtPosition(tempFilePath, localOffset);
   if (!quickInfo) return null;
 
   const displayParts =
