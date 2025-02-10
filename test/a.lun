@@ -8,6 +8,7 @@ html:
   </div>
 
 script:
+  import Hello from "./a";
   let count = 0;
   function clear() {
     count = 0;
@@ -16,19 +17,6 @@ script:
     count++;
     console.log(count);
   }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   function toggle() {
     if (interval) {
@@ -40,6 +28,9 @@ script:
     }
   }
   let interval = null;
+  window.onload = function() {
+    console.log("Window loaded");
+  };
 style:
   h1 {
     color: blue;

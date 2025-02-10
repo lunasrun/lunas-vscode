@@ -7,6 +7,10 @@
   "engines": {
     "vscode": "^1.78.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lunasdev/lunas.git"
+  },
   "scripts": {
     "package": "tsc && vsce package"
   },

@@ -77,24 +77,36 @@ const tsHost: ts.LanguageServiceHost = {
   getCurrentDirectory: () => process.cwd(),
   getCompilationSettings: () => ({
     module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ESNext,
+    target: ts.ScriptTarget.ES2020,
     strict: true,
     lib: [
-      "lib.dom.d.ts",
-      // "/Users/tatsuru/Documents/Program/lunas-proj/lunas-vscode/lib.dom.d.ts",
+      "lib.dom.d.ts"
     ], // 標準ライブラリを追加
     allowJs: true, // JavaScript も許可
     noEmit: true, // ファイル出力しない
   }),
-  getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-  readFile: (fileName) =>
-    fileName === tempFilePath ? tempScriptContent : undefined,
+  getDefaultLibFileName: (options) => {
+    const defaultLibPath = ts.getDefaultLibFilePath(options);
+    console.log(`[DEBUG] getDefaultLibFileName → ${defaultLibPath}`);
+    return defaultLibPath;
+  },
+  readFile: (fileName) => {
+    if (fileName === tempFilePath) {
+      return tempScriptContent;
+    }
+    if (fileName.includes("lib.es2020")) {
+      console.log(`[DEBUG] readFile("${fileName}")`);
+    }
+    return ts.sys.readFile(fileName);
+  },
   fileExists: (fileName) => {
     if (fileName === tempFilePath) {
       return true;
     }
     const exists = ts.sys.fileExists(fileName);
-    console.log(`[DEBUG] fileExists("${fileName}") → ${exists}`);
+    if (fileName.includes("lib.es2020")) {
+      console.log(`[DEBUG] fileExists("${fileName}") → ${exists}`);
+    }
     return exists;
   },
 };
@@ -188,10 +200,6 @@ connection.onHover((params): Hover | null => {
   };
 });
 
-console.log(
-  "Default Lib File Path:",
-  ts.getDefaultLibFilePath(tsHost.getCompilationSettings()),
-);
 console.log(tsService.getCompilerOptionsDiagnostics());
 
 // LSP の接続を開始
