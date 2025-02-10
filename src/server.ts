@@ -1,6 +1,6 @@
 import {
   createConnection,
-  TextDocuments,
+  Tài  liệu  văn  bản,
   ProposedFeatures,
   InitializeParams,
   TextDocumentSyncKind,
@@ -11,41 +11,41 @@ import {
   Hover,
 } from "vscode-languageserver/node";
 
-import { TextDocument } from "vscode-languageserver-textdocument";
-import * as ts from "typescript";
-import * as path from "path";
-import {
-  getLocationInBlock,
-  textLocationVisualizer,
-} from "./utils/text-location";
+importnhập  { TextDocument } từ  "vscode-languageserver-textdocument";{ TextDocument } from "vscode-languageserver-textdocument";
+importnhậpnhập * như  ts từ  "typescript";như ts từ "typescript";* as ts from "typescript";
+importnhậpnhập * làm  con đường  từ  "con đường";làm con đường từ "con đường";* as path from "path";
+importnhập  khẩu  {{
+ GetLocationInBlock, getLocationInBlock,
+ textLocationVisualizer, textLocationVisualizer,
+}} từ  ". /utils /text-location";from "./utils/text-location";
 
 // LSP の接続を作成
-const connection = createConnection(ProposedFeatures.all);
-const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
+constkết nối   hằngkết   nối  hằng = tạo  Kết nối (ProposedFeatures.all);tạo Kết nối (ProposedFeatures.all);connection = createConnection(ProposedFeatures.all);
+constTài liệu  liên  quanTài liệu  liên  quan: Văn bản văn bản<TextDocument> = Văn bản văn bản mới (TextDocument);Văn bản văn bản<TextDocument> = Văn bản văn bản mới (TextDocument);documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
-const INDENT_SIZE = 2;
-let scriptVersion = 0; // スクリプトのバージョン管理用
+constConst INDENT_SIZEConst INDENT_SIZE = 2;2;INDENT_SIZE = 2;
+letlet scriptVersionlet scriptVersion = 0; // スクリプトのバージョン管理用0; // スクリプトのバージョン管理用scriptVersion = 0; // スクリプトのバージョン管理用
 
-connection.onInitialize((params: InitializeParams) => {
-  return {
-    capabilities: {
-      textDocumentSync: TextDocumentSyncKind.Incremental,
-      completionProvider: { resolveProvider: true },
+connectionKết nối.onInitialize((param: InitializeParam) => {onInitialize((params: InitializeParams) => {
+ Trả  lại  { return {
+ khả  năng:  { capabilities: {
+ textDocumentSync: TextDocumentSyncKind. Tăng dần textDocumentSync: TextDocumentSyncKind.Incremental,
+ completionProvider: { resolveProvider: true }, completionProvider: { resolveProvider: true },
       hoverProvider: true, // ホバー機能を有効化
-    },
-  };
-});
+     }, },
+   }; };
+})});
 
 // `.lun` の `script:` を抽出
 function extractScript(text: string): {
   script: string;
   startLine: number;
   endLine: number;
-} {
+}} {{
   const scriptMatch = text.match(/script:\s*\n([\s\S]*?)(?:\n\s*style:|$)/);
   if (!scriptMatch) {
     return { script: "", startLine: 0, endLine: 0 };
-  }
+   } }
 
   const scriptStart = text.indexOf("script:");
   const startLine = text.substring(0, scriptStart).split("\n").length;
@@ -53,13 +53,13 @@ function extractScript(text: string): {
   let scriptLines = scriptMatch[1].split("\n");
   scriptLines = scriptLines.map((line) =>
     line.startsWith("  ") ? line.slice(2) : line,
-  );
+   ); );
 
   return {
     script: scriptLines.join("\n"),
     startLine,
     endLine: startLine + scriptLines.length - 1,
-  };
+   }; };
 }
 
 // `.ts` 用の仮ファイル
