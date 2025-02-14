@@ -10,7 +10,7 @@ import {
   DiagnosticSeverity,
   Hover,
 } from "vscode-languageserver/node";
-
+import * as fs from "fs";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import * as ts from "typescript";
 import * as path from "path";
@@ -70,44 +70,30 @@ let tempScriptContent = ""; // 最新のスクリプトを保存
 const tsHost: ts.LanguageServiceHost = {
   getScriptFileNames: () => [tempFilePath],
   getScriptVersion: () => scriptVersion.toString(), // バージョンを変更
-  getScriptSnapshot: (fileName) =>
-    fileName === tempFilePath
-      ? ts.ScriptSnapshot.fromString(tempScriptContent) // 最新の内容を返す
-      : undefined,
+  getScriptSnapshot: (fileName) => {
+    if (fileName === tempFilePath) {
+      return ts.ScriptSnapshot.fromString(tempScriptContent);
+    }
+    return ts.ScriptSnapshot.fromString(fs.readFileSync(fileName).toString());
+  },
   getCurrentDirectory: () => process.cwd(),
-  getCompilationSettings: () => ({
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2020,
-    strict: true,
-    lib: [
-      "lib.dom.d.ts"
-    ], // 標準ライブラリを追加
-    allowJs: true, // JavaScript も許可
-    noEmit: true, // ファイル出力しない
-  }),
+  getCompilationSettings: () => {
+    return ts.getDefaultCompilerOptions();
+  },
   getDefaultLibFileName: (options) => {
-    const defaultLibPath = ts.getDefaultLibFilePath(options);
-    console.log(`[DEBUG] getDefaultLibFileName → ${defaultLibPath}`);
-    return defaultLibPath;
+    return ts.getDefaultLibFilePath(options);
   },
   readFile: (fileName) => {
     if (fileName === tempFilePath) {
       return tempScriptContent;
     }
-    if (fileName.includes("lib.es2020")) {
-      console.log(`[DEBUG] readFile("${fileName}")`);
-    }
-    return ts.sys.readFile(fileName);
+    return ts.sys.readFile(fileName, "utf-8");
   },
   fileExists: (fileName) => {
     if (fileName === tempFilePath) {
       return true;
     }
-    const exists = ts.sys.fileExists(fileName);
-    if (fileName.includes("lib.es2020")) {
-      console.log(`[DEBUG] fileExists("${fileName}") → ${exists}`);
-    }
-    return exists;
+    return ts.sys.fileExists(fileName);
   },
 };
 
