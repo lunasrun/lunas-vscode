@@ -9,11 +9,13 @@ import {
   Diagnostic,
   DiagnosticSeverity,
   Hover,
+  Location,
 } from "vscode-languageserver/node";
 import * as fs from "fs";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import * as ts from "typescript";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import {
   getLocationInBlock,
   textLocationVisualizer,
@@ -32,6 +34,7 @@ connection.onInitialize((params: InitializeParams) => {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       completionProvider: { resolveProvider: true },
       hoverProvider: true, // ホバー機能を有効化
+      definitionProvider: true, // 定義ジャンプ機能を有効化
     },
   };
 });
@@ -144,7 +147,6 @@ documents.onDidChangeContent((change) => {
 
 // **ホバーで型情報を提供**
 connection.onHover((params): Hover | null => {
-  const currentDate = new Date().toLocaleTimeString();
   const doc = documents.get(params.textDocument.uri);
   if (!doc) return null;
 
@@ -166,10 +168,6 @@ connection.onHover((params): Hover | null => {
 
   const localOffset = localPosition.localPosition.offset;
 
-  // console.log(
-  //   textLocationVisualizer(script, { type: "offset", offset: localOffset }),
-  // );
-
   const quickInfo = tsService.getQuickInfoAtPosition(tempFilePath, localOffset);
   if (!quickInfo) return null;
 
@@ -186,7 +184,91 @@ connection.onHover((params): Hover | null => {
   };
 });
 
-console.log(tsService.getCompilerOptionsDiagnostics());
+// **定義ジャンプをサポート**
+connection.onDefinition((params): Location[] | null => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return null;
+
+  const text = doc.getText();
+  const { script, startLine, endLine } = extractScript(text);
+
+  const localPosition = getLocationInBlock(
+    text,
+    startLine,
+    endLine,
+    INDENT_SIZE,
+    {
+      type: "line-column",
+      line: params.position.line,
+      column: params.position.character,
+    },
+  );
+  if (!localPosition) return null;
+
+  const localOffset = localPosition.localPosition.offset;
+  const definitions = tsService.getDefinitionAtPosition(
+    tempFilePath,
+    localOffset,
+  );
+  if (!definitions) return null;
+
+  const results: Location[] = [];
+
+  definitions.forEach((def) => {
+    if (def.fileName === tempFilePath) {
+      // `.lun` 内の定義の場合、元のファイル上の位置に変換
+      const sourceFile = tsService.getProgram()?.getSourceFile(tempFilePath);
+      if (sourceFile) {
+        const startPos = sourceFile.getLineAndCharacterOfPosition(
+          def.textSpan.start,
+        );
+        const endPos = sourceFile.getLineAndCharacterOfPosition(
+          def.textSpan.start + def.textSpan.length,
+        );
+        results.push({
+          uri: params.textDocument.uri,
+          range: {
+            start: {
+              line: startPos.line + startLine,
+              character: startPos.character + INDENT_SIZE,
+            },
+            end: {
+              line: endPos.line + startLine,
+              character: endPos.character + INDENT_SIZE,
+            },
+          },
+        });
+      }
+    } else {
+      // 他ファイルの場合、URI に変換してそのまま返す
+      const defUri = pathToFileURL(def.fileName).toString();
+      const sourceFile = tsService.getProgram()?.getSourceFile(def.fileName);
+      if (sourceFile) {
+        const startPos = sourceFile.getLineAndCharacterOfPosition(
+          def.textSpan.start,
+        );
+        const endPos = sourceFile.getLineAndCharacterOfPosition(
+          def.textSpan.start + def.textSpan.length,
+        );
+        results.push({
+          uri: defUri,
+          range: {
+            start: {
+              line: startPos.line,
+              character: startPos.character,
+            },
+            end: {
+              line: endPos.line,
+              character: endPos.character,
+            },
+          },
+        });
+      }
+    }
+  });
+
+  return results;
+});
 
 // LSP の接続を開始
 documents.listen(connection);
