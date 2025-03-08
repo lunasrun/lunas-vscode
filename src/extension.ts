@@ -32,10 +32,10 @@ export function activate(context: vscode.ExtensionContext) {
   );
   client.start();
 
-  console.log("Congratulations, your extension 'lunas' is now active!");
-
   // フォーマット機能を有効化
   activateFormatter(context);
+
+  console.log("Congratulations, your extension 'lunas' is now active!");
 }
 
 export function deactivate(): Thenable<void> | undefined {
