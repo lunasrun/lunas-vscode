@@ -18,22 +18,14 @@
     "Programming Languages"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": [
-    "onLanguage:lunas",
-    "onCommand:lunas.format"
-  ],
+  "activationEvents": [],
   "contributes": {
     "configurationDefaults": {
       "[lunas]": {
         "editor.defaultFormatter": "lunasdev.lunas"
       }
     },
-    "commands": [
-      {
-        "command": "lunas.format",
-        "title": "Format Lunas Code"
-      }
-    ],
+    "commands": [],
     "languages": [
       {
         "id": "lunas",
@@ -69,7 +61,7 @@
     ]
   },
   "dependencies": {
-    "lunas-formatter": "^0.0.1-beta.2",
+    "lunas-formatter": "^0.0.1-beta.4",
     "typescript": "^5.7.3",
     "vscode-languageclient": "^9.0.1",
     "vscode-languageserver": "^9.0.1",
