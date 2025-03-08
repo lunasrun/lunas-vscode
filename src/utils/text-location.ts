@@ -86,12 +86,13 @@ export function getLocationInBlock(
   localBlockEndLine: number,
   indentSize: number,
   globalPosition: LineColumnPosition,
+  additionalPositionSize: number,
 ): { localPosition: OffsetPosition } | null {
   /* startLineから1行ずつindentSizeを引いた行を取得し、文字数を結合していく */
   /* もしindentSizeよりLine.lengthが小さければ、0を返す */
   const lines = globalText.split("\n");
   let currentLine = localBlockStartLine - 1;
-  let localOffset = -1;
+  let localOffset = -1 + additionalPositionSize;
 
   if (
     globalPosition.line < localBlockStartLine ||

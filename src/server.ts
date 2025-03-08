@@ -28,6 +28,9 @@ const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 const INDENT_SIZE = 2;
 let scriptVersion = 0; // スクリプトのバージョン管理用
 
+let totalAdditionalPartChars = 0;
+let totalAdditionalPartLines = 0;
+
 connection.onInitialize((params: InitializeParams) => {
   return {
     capabilities: {
@@ -63,6 +66,20 @@ function extractScript(text: string): {
     startLine,
     endLine: startLine + scriptLines.length - 1,
   };
+}
+
+// `@input` を解析
+function extractInputs(text: string): Record<string, string> {
+  const inputRegex = /@input\s+([\w\d_]+)\s*:\s*([\w\d_]+)/g;
+  const inputs: Record<string, string> = {};
+  let match;
+
+  while ((match = inputRegex.exec(text)) !== null) {
+    const [, name, type] = match;
+    inputs[name] = type;
+  }
+
+  return inputs;
 }
 
 // `.ts` 用の仮ファイル
@@ -106,9 +123,22 @@ const tsService = ts.createLanguageService(tsHost);
 documents.onDidChangeContent((change) => {
   const text = change.document.getText();
   const { script, startLine } = extractScript(text);
+  const inputs = extractInputs(text);
 
-  if (tempScriptContent !== script) {
-    tempScriptContent = script;
+  // `@input` を TypeScript 側で認識できるようにする
+  let inputDeclarations =
+    Object.entries(inputs)
+      .map(([name, type]) => `declare let ${name}: ${type};`)
+      .join("\n") + "\n";
+
+  totalAdditionalPartChars = inputDeclarations.length;
+  totalAdditionalPartLines = Object.keys(inputs).length;
+
+  // 仮の TypeScript スクリプトを構築
+  const updatedScript = `${inputDeclarations}${script}`;
+
+  if (tempScriptContent !== updatedScript) {
+    tempScriptContent = updatedScript;
     scriptVersion++; // バージョンを更新
   }
 
@@ -163,6 +193,7 @@ connection.onHover((params): Hover | null => {
       line: params.position.line,
       column: params.position.character,
     },
+    totalAdditionalPartChars,
   );
   if (!localPosition) return null;
 
@@ -202,6 +233,7 @@ connection.onDefinition((params): Location[] | null => {
       line: params.position.line,
       column: params.position.character,
     },
+    totalAdditionalPartChars,
   );
   if (!localPosition) return null;
 
@@ -229,11 +261,11 @@ connection.onDefinition((params): Location[] | null => {
           uri: params.textDocument.uri,
           range: {
             start: {
-              line: startPos.line + startLine,
+              line: startPos.line + startLine - totalAdditionalPartLines,
               character: startPos.character + INDENT_SIZE,
             },
             end: {
-              line: endPos.line + startLine,
+              line: endPos.line + startLine - totalAdditionalPartLines,
               character: endPos.character + INDENT_SIZE,
             },
           },
