@@ -98,6 +98,11 @@ export function getLocationInBlock(
     globalPosition.line < localBlockStartLine ||
     globalPosition.line > localBlockEndLine
   ) {
+    console.error(
+      "Global position is out of block range" +
+        "\n" +
+        `globalPosition: ${globalPosition.line} and localBlockStartLine: ${localBlockStartLine}, localBlockEndLine: ${localBlockEndLine}`,
+    );
     return null;
   }
 
@@ -119,14 +124,17 @@ export function getLocationInBlock(
 
     const trimmedLine = lines[currentLine].slice(indentSize);
     if (globalPosition.line === currentLine) {
-      if (globalPosition.column < trimmedLine.length) {
+      if (globalPosition.column - 1 - indentSize <= trimmedLine.length) {
         return {
           localPosition: {
             type: "offset",
-            offset: localOffset + globalPosition.column - indentSize,
+            offset: localOffset + globalPosition.column - 1 - indentSize,
           },
         };
       } else {
+        console.error(
+          `the length of the line ${trimmedLine.length} is smaller than the global position ${globalPosition.column - 1 - indentSize}`,
+        );
         return null;
       }
     }
@@ -134,6 +142,7 @@ export function getLocationInBlock(
     localOffset += trimmedLine.length;
   }
 
+  console.error("out of range");
   return null;
 }
 

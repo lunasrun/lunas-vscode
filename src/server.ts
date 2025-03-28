@@ -313,6 +313,68 @@ connection.onDefinition((params): Location[] | null => {
   return results;
 });
 
+connection.onCompletion((params) => {
+  const doc = documents.get(params.textDocument.uri);
+  if (!doc) return [];
+
+  const text = doc.getText();
+  const { script, startLine, endLine } = extractScript(text);
+  const localPosition = getLocationInBlock(
+    text,
+    startLine,
+    endLine,
+    INDENT_SIZE,
+    {
+      type: "line-column",
+      line: params.position.line,
+      column: params.position.character,
+    },
+    totalAdditionalPartChars,
+  );
+  if (!localPosition) return [];
+
+  const localOffset = localPosition.localPosition.offset;
+  const virtualPath = getVirtualFilePath(params.textDocument.uri);
+  const completions = tsService.getCompletionsAtPosition(
+    virtualPath,
+    localOffset,
+    {},
+  );
+  if (!completions) return [];
+
+  const items: CompletionItem[] = completions.entries.map((entry) => ({
+    label: entry.name,
+    kind: CompletionItemKind.Text,
+  }));
+
+  return items;
+});
+
+connection.onCompletionResolve((item) => {
+  if (item.data) {
+    const { uri, offset, entryName } = item.data as {
+      uri: string;
+      offset: number;
+      entryName: string;
+    };
+    const virtualPath = getVirtualFilePath(uri);
+    const details = tsService.getCompletionEntryDetails(
+      virtualPath,
+      offset,
+      entryName,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    );
+    if (details) {
+      item.detail = ts.displayPartsToString(details.displayParts || []);
+      item.documentation = ts.displayPartsToString(details.documentation || []);
+    }
+  }
+  return item;
+});
+
 // LSP の接続を開始
 documents.listen(connection);
 connection.listen();
