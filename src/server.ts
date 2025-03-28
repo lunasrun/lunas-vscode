@@ -159,11 +159,11 @@ documents.onDidChangeContent((change) => {
         range: {
           start: {
             line: start.line + startLine,
-            character: start.character + INDENT_SIZE,
+            character: start.character + INDENT_SIZE - totalAdditionalPartLines,
           },
           end: {
             line: end.line + startLine,
-            character: end.character + INDENT_SIZE,
+            character: end.character + INDENT_SIZE - totalAdditionalPartLines,
           },
         },
         message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
