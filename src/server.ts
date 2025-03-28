@@ -132,7 +132,7 @@ documents.onDidChangeContent((change) => {
       .join("\n") + "\n";
 
   totalAdditionalPartChars = inputDeclarations.length;
-  totalAdditionalPartLines = Object.keys(inputs).length;
+  totalAdditionalPartLines = inputDeclarations.split("\n").length;
 
   // 仮の TypeScript スクリプトを構築
   const updatedScript = `${inputDeclarations}${script}`;
@@ -158,12 +158,12 @@ documents.onDidChangeContent((change) => {
         severity: DiagnosticSeverity.Error,
         range: {
           start: {
-            line: start.line + startLine,
-            character: start.character + INDENT_SIZE - totalAdditionalPartLines,
+            line: start.line + startLine - totalAdditionalPartLines + 1,
+            character: start.character + INDENT_SIZE,
           },
           end: {
-            line: end.line + startLine,
-            character: end.character + INDENT_SIZE - totalAdditionalPartLines,
+            line: end.line + startLine - totalAdditionalPartLines + 1,
+            character: end.character + INDENT_SIZE,
           },
         },
         message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
@@ -261,11 +261,11 @@ connection.onDefinition((params): Location[] | null => {
           uri: params.textDocument.uri,
           range: {
             start: {
-              line: startPos.line + startLine - totalAdditionalPartLines,
+              line: startPos.line + startLine - totalAdditionalPartLines + 1,
               character: startPos.character + INDENT_SIZE,
             },
             end: {
-              line: endPos.line + startLine - totalAdditionalPartLines,
+              line: endPos.line + startLine - totalAdditionalPartLines + 1,
               character: endPos.character + INDENT_SIZE,
             },
           },
