@@ -42,14 +42,10 @@ async function init() {
         ? new URL(workspaceFolders[0].uri).pathname
         : process.cwd();
 
-    console.log("workspaceRoot", workspaceRoot);
-    // workspaceSrcRoot
     const workspaceSrcRoot = path.join(workspaceRoot, "src");
     const files = fs.readdirSync(workspaceSrcRoot);
     const dtsFiles = files.filter((file) => file.endsWith(".d.ts"));
     extraTypings = dtsFiles.map((file) => path.join(workspaceSrcRoot, file));
-
-    console.log("extraTypings", extraTypings);
 
     return {
       capabilities: {
@@ -122,7 +118,6 @@ async function init() {
     // fallback
     return ts.parseJsonConfigFileContent({}, ts.sys, process.cwd());
   }
-
 
   // TypeScript 言語サービス
   const tsHost: ts.LanguageServiceHost = {
