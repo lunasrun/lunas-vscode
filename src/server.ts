@@ -60,7 +60,7 @@ async function init() {
     };
   });
 
-  // スクリプトブロック抽出（スクリプトブロックがなければ空文字列を返す）
+  // スクリプトブロック抽出（ブロックがなければ空文字列を返す）
   function extractScript(text: string): {
     script: string;
     startLine: number;
@@ -71,8 +71,9 @@ async function init() {
       return { script: "", startLine: 0, endLine: 0 };
     }
     const scriptStart = text.indexOf("script:");
+    // startLine は "script:" 行までの行数
     const startLine = text.substring(0, scriptStart).split("\n").length;
-    let scriptLines = scriptMatch[1]
+    const scriptLines = scriptMatch[1]
       .split("\n")
       .map((line) => (line.startsWith("  ") ? line.slice(2) : line));
     return {
@@ -186,7 +187,6 @@ async function init() {
     totalAdditionalPartLines = inputDeclarations.split("\n").length - 1;
     const updatedScript = `${inputDeclarations}${script}`;
 
-    // 内容が変更されている場合のみ更新
     if (scriptContents.get(virtualPath) !== updatedScript) {
       scriptContents.set(virtualPath, updatedScript);
       scriptVersions.set(
@@ -195,10 +195,14 @@ async function init() {
       );
     }
 
+    // scriptBlockStart を "script:" 行の次とする
+    const scriptBlockStart = startLine + 1;
+
     const diagnostics: Diagnostic[] = [];
     const syntaxDiagnostics = tsService.getSyntacticDiagnostics(virtualPath);
     const semanticDiagnostics = tsService.getSemanticDiagnostics(virtualPath);
 
+    // 仮想ファイルの位置から元ファイルの位置へ変換（各行番号から1行分上に調整）
     [...syntaxDiagnostics, ...semanticDiagnostics].forEach((tsDiag) => {
       if (tsDiag.file && tsDiag.start !== undefined) {
         const diagStart = tsDiag.file.getLineAndCharacterOfPosition(
@@ -211,11 +215,16 @@ async function init() {
           severity: DiagnosticSeverity.Error,
           range: {
             start: {
-              line: diagStart.line + startLine - totalAdditionalPartLines,
+              line:
+                diagStart.line -
+                totalAdditionalPartLines +
+                scriptBlockStart -
+                1,
               character: diagStart.character + INDENT_SIZE,
             },
             end: {
-              line: diagEnd.line + startLine - totalAdditionalPartLines,
+              line:
+                diagEnd.line - totalAdditionalPartLines + scriptBlockStart - 1,
               character: diagEnd.character + INDENT_SIZE,
             },
           },
@@ -240,13 +249,13 @@ async function init() {
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
     const text = doc.getText();
-    const { script, startLine, endLine } = extractScript(text);
-    // スクリプトブロックが存在しなければ何も返さない
+    const { script, startLine } = extractScript(text);
     if (!script) return null;
+    const scriptBlockStart = startLine + 1;
     const localPosition = getLocationInBlock(
       text,
       startLine,
-      endLine,
+      startLine + script.split("\n").length,
       INDENT_SIZE,
       {
         type: "line-column",
@@ -281,13 +290,13 @@ async function init() {
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
     const text = doc.getText();
-    const { script, startLine, endLine } = extractScript(text);
-    // スクリプトブロックがなければ何も返さない
+    const { script, startLine } = extractScript(text);
     if (!script) return null;
+    const scriptBlockStart = startLine + 1;
     const localPosition = getLocationInBlock(
       text,
       startLine,
-      endLine,
+      startLine + script.split("\n").length,
       INDENT_SIZE,
       {
         type: "line-column",
@@ -298,7 +307,7 @@ async function init() {
     );
     if (!localPosition) return null;
     console.log(textLocationVisualizer(script, localPosition.localPosition));
-
+    // 定義取得時は、以前の補正 localOffset + 1 を適用
     const localOffset = localPosition.localPosition.offset;
     const virtualPath = getVirtualFilePath(params.textDocument.uri);
     const definitions = tsService.getDefinitionAtPosition(
@@ -306,9 +315,7 @@ async function init() {
       localOffset + 1,
     );
     if (!definitions) return null;
-
     const results: Location[] = [];
-
     definitions.forEach((def) => {
       if (def.fileName === virtualPath) {
         const sourceFile = tsService.getProgram()?.getSourceFile(virtualPath);
@@ -319,23 +326,26 @@ async function init() {
           const defEnd = sourceFile.getLineAndCharacterOfPosition(
             def.textSpan.start + def.textSpan.length,
           );
-          console.log({ totalAdditionalPartLines });
           results.push({
             uri: params.textDocument.uri,
             range: {
               start: {
-                line: defStart.line + startLine - totalAdditionalPartLines,
+                line:
+                  defStart.line -
+                  totalAdditionalPartLines +
+                  scriptBlockStart -
+                  1,
                 character: defStart.character + INDENT_SIZE,
               },
               end: {
-                line: defEnd.line + startLine - totalAdditionalPartLines,
+                line:
+                  defEnd.line - totalAdditionalPartLines + scriptBlockStart - 1,
                 character: defEnd.character + INDENT_SIZE,
               },
             },
           });
         }
       } else {
-        // 他ファイルの場合はそのまま URI 変換
         const defUri = pathToFileURL(def.fileName).toString();
         const sourceFile = tsService.getProgram()?.getSourceFile(def.fileName);
         if (sourceFile) {
@@ -370,12 +380,12 @@ async function init() {
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return [];
     const text = doc.getText();
-    const { script, startLine, endLine } = extractScript(text);
+    const { script, startLine } = extractScript(text);
     if (!script) return [];
     const localPosition = getLocationInBlock(
       text,
       startLine,
-      endLine,
+      startLine + script.split("\n").length,
       INDENT_SIZE,
       {
         type: "line-column",

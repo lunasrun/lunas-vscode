@@ -15,6 +15,7 @@ export function lineColumnToOffset(
   text: string,
   position: LineColumnPosition,
 ): OffsetPosition {
+  console.log("lineColumnToOffset");
   const lines = text.split("\n");
   const offset =
     lines
@@ -158,6 +159,9 @@ export function textLocationVisualizer(
   const line = textPositionLineColumn.line;
   const column = textPositionLineColumn.column;
   const lineContent = text.split("\n")[line];
+  if (lineContent === undefined) {
+    return `line ${line} is out of range`;
+  }
   const splittedLine = lineContent.split("");
   /* splittedLineのposition.chalacter文字目に->を追加する */
   splittedLine.splice(column, 0, "->");
