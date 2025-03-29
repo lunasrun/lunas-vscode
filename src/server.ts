@@ -22,15 +22,13 @@ import {
 } from "./utils/text-location";
 
 async function init() {
-  // LSP の接続を作成
+  // LSP の接続作成
   const connection = createConnection(ProposedFeatures.all);
   const documents: TextDocuments<TextDocument> = new TextDocuments(
     TextDocument,
   );
 
   const INDENT_SIZE = 2;
-  let scriptVersion = 0; // スクリプトのバージョン管理用
-
   let totalAdditionalPartChars = 0;
   let totalAdditionalPartLines = 0;
   let extraTypings: string[] = [];
@@ -62,7 +60,7 @@ async function init() {
     };
   });
 
-  // `.lun` の `script:` を抽出
+  // スクリプトブロック抽出（スクリプトブロックがなければ空文字列を返す）
   function extractScript(text: string): {
     script: string;
     startLine: number;
@@ -72,15 +70,11 @@ async function init() {
     if (!scriptMatch) {
       return { script: "", startLine: 0, endLine: 0 };
     }
-
     const scriptStart = text.indexOf("script:");
     const startLine = text.substring(0, scriptStart).split("\n").length;
-
-    let scriptLines = scriptMatch[1].split("\n");
-    scriptLines = scriptLines.map((line) =>
-      line.startsWith("  ") ? line.slice(2) : line,
-    );
-
+    let scriptLines = scriptMatch[1]
+      .split("\n")
+      .map((line) => (line.startsWith("  ") ? line.slice(2) : line));
     return {
       script: scriptLines.join("\n"),
       startLine,
@@ -88,17 +82,15 @@ async function init() {
     };
   }
 
-  // `@input` を解析
+  // @input の解析
   function extractInputs(text: string): Record<string, string> {
     const inputRegex = /@input\s+([\w\d_]+)\s*:\s*([\w\d_]+)/g;
     const inputs: Record<string, string> = {};
     let match;
-
     while ((match = inputRegex.exec(text)) !== null) {
       const [, name, type] = match;
       inputs[name] = type;
     }
-
     return inputs;
   }
 
@@ -115,21 +107,38 @@ async function init() {
       if (parent === dir) break;
       dir = parent;
     }
-    // fallback
     return ts.parseJsonConfigFileContent({}, ts.sys, process.cwd());
   }
 
-  // TypeScript 言語サービス
+  // 仮想ファイルの内容とバージョンを管理
+  const scriptContents = new Map<string, string>();
+  const scriptVersions = new Map<string, number>();
+  const tsConfigCache = new Map<string, ts.ParsedCommandLine>();
+
+  // 現在リクエスト対象のファイルの仮想パスを保持
+  let activeVirtualFile: string | null = null;
+
+  function getVirtualFilePath(documentUri: string): string {
+    const realPath = new URL(documentUri).pathname;
+    const parsedPath = path.parse(realPath);
+    const virtualFileName = `.${parsedPath.name}.virtual.ts`;
+    return path.join(parsedPath.dir, virtualFileName);
+  }
+
+  // リクエスト前に対象ファイルを activeVirtualFile に設定するヘルパー
+  function setActiveFileFromUri(uri: string) {
+    activeVirtualFile = getVirtualFilePath(uri);
+  }
+
+  // TypeScript 言語サービスホスト（対象は activeVirtualFile のみ）
   const tsHost: ts.LanguageServiceHost = {
-    getScriptFileNames: () => [
-      ...extraTypings,
-      ...Array.from(scriptContents.keys()),
-    ],
-
-    getScriptVersion: (fileName) => {
-      return (scriptVersions.get(fileName) || 0).toString();
+    getScriptFileNames: () => {
+      return activeVirtualFile
+        ? [...extraTypings, activeVirtualFile]
+        : [...extraTypings];
     },
-
+    getScriptVersion: (fileName) =>
+      (scriptVersions.get(fileName) || 0).toString(),
     getScriptSnapshot: (fileName) => {
       const content = scriptContents.get(fileName);
       if (content !== undefined) {
@@ -140,40 +149,34 @@ async function init() {
       }
       return undefined;
     },
-
     getCurrentDirectory: () => process.cwd(),
     getCompilationSettings: () => {
-      const firstFile = Array.from(scriptContents.keys())[0];
-      if (!firstFile) return ts.getDefaultCompilerOptions();
-
-      const dir = path.dirname(firstFile);
+      if (!activeVirtualFile) return ts.getDefaultCompilerOptions();
+      const dir = path.dirname(activeVirtualFile);
       if (!tsConfigCache.has(dir)) {
-        tsConfigCache.set(dir, findAndReadTSConfig(firstFile));
+        tsConfigCache.set(dir, findAndReadTSConfig(activeVirtualFile));
       }
       return tsConfigCache.get(dir)!.options;
     },
     getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-    readFile: (fileName) => {
-      return fs.existsSync(fileName)
-        ? fs.readFileSync(fileName, "utf-8")
-        : undefined;
-    },
-    fileExists: (fileName) => {
-      return scriptContents.has(fileName) || fs.existsSync(fileName);
-    },
+    readFile: (fileName) =>
+      fs.existsSync(fileName) ? fs.readFileSync(fileName, "utf-8") : undefined,
+    fileExists: (fileName) =>
+      scriptContents.has(fileName) || fs.existsSync(fileName),
   };
 
   const tsService = ts.createLanguageService(tsHost);
 
-  // `.lun` の変更を監視
+  // ドキュメント変更時に対象ファイルとして登録し、内容を更新
   documents.onDidChangeContent((change) => {
     const text = change.document.getText();
     const uri = change.document.uri;
     const virtualPath = getVirtualFilePath(uri);
+    // リクエスト対象のファイルを更新
+    activeVirtualFile = virtualPath;
 
     const { script, startLine } = extractScript(text);
     const inputs = extractInputs(text);
-
     const inputDeclarations =
       Object.entries(inputs)
         .map(([name, type]) => `declare let ${name}: ${type};`)
@@ -181,10 +184,9 @@ async function init() {
 
     totalAdditionalPartChars = inputDeclarations.length;
     totalAdditionalPartLines = inputDeclarations.split("\n").length - 1;
-
     const updatedScript = `${inputDeclarations}${script}`;
 
-    // 更新があるときだけ保存・バージョンアップ
+    // 内容が変更されている場合のみ更新
     if (scriptContents.get(virtualPath) !== updatedScript) {
       scriptContents.set(virtualPath, updatedScript);
       scriptVersions.set(
@@ -197,24 +199,24 @@ async function init() {
     const syntaxDiagnostics = tsService.getSyntacticDiagnostics(virtualPath);
     const semanticDiagnostics = tsService.getSemanticDiagnostics(virtualPath);
 
-    const allDiagnostics = [...syntaxDiagnostics, ...semanticDiagnostics];
-    allDiagnostics.forEach((tsDiag) => {
+    [...syntaxDiagnostics, ...semanticDiagnostics].forEach((tsDiag) => {
       if (tsDiag.file && tsDiag.start !== undefined) {
-        const start = tsDiag.file.getLineAndCharacterOfPosition(tsDiag.start);
-        const end = tsDiag.file.getLineAndCharacterOfPosition(
+        const diagStart = tsDiag.file.getLineAndCharacterOfPosition(
+          tsDiag.start,
+        );
+        const diagEnd = tsDiag.file.getLineAndCharacterOfPosition(
           tsDiag.start + (tsDiag.length || 0),
         );
-
         diagnostics.push({
           severity: DiagnosticSeverity.Error,
           range: {
             start: {
-              line: start.line + startLine - totalAdditionalPartLines,
-              character: start.character + INDENT_SIZE,
+              line: diagStart.line + startLine - totalAdditionalPartLines,
+              character: diagStart.character + INDENT_SIZE,
             },
             end: {
-              line: end.line + startLine - totalAdditionalPartLines,
-              character: end.character + INDENT_SIZE,
+              line: diagEnd.line + startLine - totalAdditionalPartLines,
+              character: diagEnd.character + INDENT_SIZE,
             },
           },
           message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
@@ -222,29 +224,25 @@ async function init() {
         });
       }
     });
-
     connection.sendDiagnostics({ uri, diagnostics });
   });
 
-  const scriptContents = new Map<string, string>(); // 仮想ファイル名 -> script内容
-  const scriptVersions = new Map<string, number>(); // 仮想ファイル名 -> バージョン
-  const tsConfigCache = new Map<string, ts.ParsedCommandLine>();
+  // ドキュメントクローズ時にキャッシュから削除
+  documents.onDidClose((change) => {
+    const virtualPath = getVirtualFilePath(change.document.uri);
+    scriptContents.delete(virtualPath);
+    scriptVersions.delete(virtualPath);
+  });
 
-  function getVirtualFilePath(documentUri: string): string {
-    const realPath = new URL(documentUri).pathname; // LSP URI → ファイルパス
-    const parsedPath = path.parse(realPath);
-    const virtualFileName = `.${parsedPath.name}.virtual.ts`;
-    return path.join(parsedPath.dir, virtualFileName);
-  }
-
-  // **ホバーで型情報を提供**
+  // ホバー処理
   connection.onHover((params): Hover | null => {
+    setActiveFileFromUri(params.textDocument.uri);
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
-
     const text = doc.getText();
     const { script, startLine, endLine } = extractScript(text);
-
+    // スクリプトブロックが存在しなければ何も返さない
+    if (!script) return null;
     const localPosition = getLocationInBlock(
       text,
       startLine,
@@ -258,21 +256,17 @@ async function init() {
       totalAdditionalPartChars,
     );
     if (!localPosition) return null;
-
     const localOffset = localPosition.localPosition.offset;
-
     const virtualPath = getVirtualFilePath(params.textDocument.uri);
     const quickInfo = tsService.getQuickInfoAtPosition(
       virtualPath,
       localOffset,
     );
     if (!quickInfo) return null;
-
     const displayParts =
       quickInfo.displayParts?.map((part) => part.text).join("") ?? "";
     const documentation =
       quickInfo.documentation?.map((part) => part.text).join("\n") ?? "";
-
     return {
       contents: {
         kind: "markdown",
@@ -281,14 +275,15 @@ async function init() {
     };
   });
 
-  // **定義ジャンプをサポート**
+  // 定義ジャンプ処理
   connection.onDefinition((params): Location[] | null => {
+    setActiveFileFromUri(params.textDocument.uri);
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
-
     const text = doc.getText();
     const { script, startLine, endLine } = extractScript(text);
-
+    // スクリプトブロックがなければ何も返さない
+    if (!script) return null;
     const localPosition = getLocationInBlock(
       text,
       startLine,
@@ -302,12 +297,13 @@ async function init() {
       totalAdditionalPartChars,
     );
     if (!localPosition) return null;
+    console.log(textLocationVisualizer(script, localPosition.localPosition));
 
     const localOffset = localPosition.localPosition.offset;
     const virtualPath = getVirtualFilePath(params.textDocument.uri);
     const definitions = tsService.getDefinitionAtPosition(
       virtualPath,
-      localOffset,
+      localOffset + 1,
     );
     if (!definitions) return null;
 
@@ -315,66 +311,67 @@ async function init() {
 
     definitions.forEach((def) => {
       if (def.fileName === virtualPath) {
-        // `.lun` 内の定義の場合、元のファイル上の位置に変換
         const sourceFile = tsService.getProgram()?.getSourceFile(virtualPath);
         if (sourceFile) {
-          const startPos = sourceFile.getLineAndCharacterOfPosition(
+          const defStart = sourceFile.getLineAndCharacterOfPosition(
             def.textSpan.start,
           );
-          const endPos = sourceFile.getLineAndCharacterOfPosition(
+          const defEnd = sourceFile.getLineAndCharacterOfPosition(
             def.textSpan.start + def.textSpan.length,
           );
+          console.log({ totalAdditionalPartLines });
           results.push({
             uri: params.textDocument.uri,
             range: {
               start: {
-                line: startPos.line + startLine - totalAdditionalPartLines,
-                character: startPos.character + INDENT_SIZE,
+                line: defStart.line + startLine - totalAdditionalPartLines,
+                character: defStart.character + INDENT_SIZE,
               },
               end: {
-                line: endPos.line + startLine - totalAdditionalPartLines,
-                character: endPos.character + INDENT_SIZE,
+                line: defEnd.line + startLine - totalAdditionalPartLines,
+                character: defEnd.character + INDENT_SIZE,
               },
             },
           });
         }
       } else {
-        // 他ファイルの場合、URI に変換してそのまま返す
+        // 他ファイルの場合はそのまま URI 変換
         const defUri = pathToFileURL(def.fileName).toString();
         const sourceFile = tsService.getProgram()?.getSourceFile(def.fileName);
         if (sourceFile) {
-          const startPos = sourceFile.getLineAndCharacterOfPosition(
+          const defStart = sourceFile.getLineAndCharacterOfPosition(
             def.textSpan.start,
           );
-          const endPos = sourceFile.getLineAndCharacterOfPosition(
+          const defEnd = sourceFile.getLineAndCharacterOfPosition(
             def.textSpan.start + def.textSpan.length,
           );
           results.push({
             uri: defUri,
             range: {
               start: {
-                line: startPos.line,
-                character: startPos.character,
+                line: defStart.line,
+                character: defStart.character,
               },
               end: {
-                line: endPos.line,
-                character: endPos.character,
+                line: defEnd.line,
+                character: defEnd.character,
               },
             },
           });
         }
       }
     });
-
     return results;
   });
 
+  // 補完処理
   connection.onCompletion((params) => {
+    setActiveFileFromUri(params.textDocument.uri);
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return [];
-
     const text = doc.getText();
     const { script, startLine, endLine } = extractScript(text);
+    if (!script) return [];
     const localPosition = getLocationInBlock(
       text,
       startLine,
@@ -388,7 +385,6 @@ async function init() {
       totalAdditionalPartChars,
     );
     if (!localPosition) return [];
-
     const localOffset = localPosition.localPosition.offset;
     const virtualPath = getVirtualFilePath(params.textDocument.uri);
     const completions = tsService.getCompletionsAtPosition(
@@ -397,12 +393,10 @@ async function init() {
       {},
     );
     if (!completions) return [];
-
     const items: CompletionItem[] = completions.entries.map((entry) => ({
       label: entry.name,
       kind: CompletionItemKind.Text,
     }));
-
     return items;
   });
 
@@ -433,7 +427,6 @@ async function init() {
     return item;
   });
 
-  // LSP の接続を開始
   documents.listen(connection);
   connection.listen();
 }
