@@ -40,7 +40,18 @@ async function init() {
         ? new URL(workspaceFolders[0].uri).pathname
         : process.cwd();
 
-    const workspaceSrcRoot = path.join(workspaceRoot, "src");
+    // TODO: node_modulesを現在ファイルからworkspaceのrootまで順番に探すことで、
+    // monorepoの場合にも対応できるようにする
+
+    // const workspaceSrcRoot = path.join(workspaceRoot, "src");
+    // ${workspace}/node_modules/lunas/dist/types/global.d.ts
+    const workspaceSrcRoot = path.join(
+      workspaceRoot,
+      "node_modules",
+      "lunas",
+      "dist",
+      "types",
+    );
     const files = fs.readdirSync(workspaceSrcRoot);
     const dtsFiles = files.filter((file) => file.endsWith(".d.ts"));
     extraTypings = dtsFiles.map((file) => path.join(workspaceSrcRoot, file));
