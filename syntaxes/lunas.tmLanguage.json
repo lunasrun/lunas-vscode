@@ -9,7 +9,7 @@
       "include": "#strings"
     },
     {
-      "match": "@(input|use|useAutoRouting)",
+      "match": "@(useAutoRouting|input|use)",
       "name": "keyword.control.lunas"
     },
     {
