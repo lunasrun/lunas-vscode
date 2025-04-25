@@ -20,7 +20,6 @@ import {
   getLocationInBlock,
   textLocationVisualizer,
 } from "./utils/text-location";
-import { findProjectRoot } from "./filepath";
 
 async function init() {
   // LSP の接続作成
@@ -40,7 +39,7 @@ async function init() {
     //   workspaceFolders.length > 0
     //     ? new URL(workspaceFolders[0].uri).pathname
     //     : process.cwd();
-    const workspaceRoot = findProjectRoot();
+    const workspaceRoot = process.env.PROJECT_ROOT ?? process.cwd();
 
     // TODO: node_modulesを現在ファイルからworkspaceのrootまで順番に探すことで、
     // monorepoの場合にも対応できるようにする
@@ -58,7 +57,13 @@ async function init() {
     if (!fs.existsSync(workspaceSrcRoot)) {
       // もしなければ {extensionのdir}/node_modulesを探す処理を追加する
       const extensionDir = path.dirname(__dirname);
-      const alternativeSrcRoot = path.join(extensionDir, "node_modules");
+      const alternativeSrcRoot = path.join(
+        extensionDir,
+        "node_modules",
+        "lunas",
+        "dist",
+        "types",
+      );
       if (fs.existsSync(alternativeSrcRoot)) {
         const files = fs.readdirSync(alternativeSrcRoot);
         const dtsFiles = files.filter((file) => file.endsWith(".d.ts"));
@@ -71,7 +76,6 @@ async function init() {
       const dtsFiles = files.filter((file) => file.endsWith(".d.ts"));
       extraTypings = dtsFiles.map((file) => path.join(workspaceSrcRoot, file));
     }
-    console.log(`extra typings: `, extraTypings);
 
     return {
       capabilities: {

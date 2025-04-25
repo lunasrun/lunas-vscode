@@ -7,6 +7,7 @@ import {
   TransportKind,
 } from "vscode-languageclient/node";
 import { activateFormatter } from "./formatter";
+import { findProjectRoot } from "./filepath";
 
 let client: LanguageClient;
 
@@ -14,9 +15,27 @@ export function activate(context: vscode.ExtensionContext) {
   // LSP サーバーのパスを指定
   const serverModule = context.asAbsolutePath(path.join("dist", "server.js"));
 
+  const PROJECT_ROOT = findProjectRoot();
+
   const serverOptions: ServerOptions = {
-    run: { module: serverModule, transport: TransportKind.ipc },
-    debug: { module: serverModule, transport: TransportKind.ipc },
+    run: {
+      module: serverModule,
+      transport: TransportKind.ipc,
+      options: {
+        env: {
+          PROJECT_ROOT: PROJECT_ROOT,
+        },
+      },
+    },
+    debug: {
+      module: serverModule,
+      transport: TransportKind.ipc,
+      options: {
+        env: {
+          PROJECT_ROOT: PROJECT_ROOT,
+        },
+      },
+    },
   };
 
   const clientOptions: LanguageClientOptions = {
