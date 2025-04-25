@@ -191,7 +191,31 @@ async function init() {
       }
       return tsConfigCache.get(dir)!.options;
     },
-    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    getDefaultLibFileName: (options) => {
+      const userTSLib = path.join(
+        process.env.PROJECT_ROOT ?? process.cwd(),
+        "node_modules",
+        "typescript",
+        "lib",
+      );
+      const fallbackTSLib = path.join(
+        __dirname,
+        "..",
+        "node_modules",
+        "typescript",
+        "lib",
+      );
+
+      const libFile = ts.getDefaultLibFileName(options);
+      const userLibPath = path.join(userTSLib, libFile);
+      const fallbackLibPath = path.join(fallbackTSLib, libFile);
+
+      if (fs.existsSync(userLibPath)) {
+        return userLibPath;
+      } else {
+        return fallbackLibPath;
+      }
+    },
     readFile: (fileName) =>
       fs.existsSync(fileName) ? fs.readFileSync(fileName, "utf-8") : undefined,
     fileExists: (fileName) =>
