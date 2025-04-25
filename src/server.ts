@@ -20,6 +20,7 @@ import {
   getLocationInBlock,
   textLocationVisualizer,
 } from "./utils/text-location";
+import { findProjectRoot } from "./filepath";
 
 async function init() {
   // LSP の接続作成
@@ -34,11 +35,12 @@ async function init() {
   let extraTypings: string[] = [];
 
   connection.onInitialize((params: InitializeParams) => {
-    const workspaceFolders = params.workspaceFolders || [];
-    const workspaceRoot =
-      workspaceFolders.length > 0
-        ? new URL(workspaceFolders[0].uri).pathname
-        : process.cwd();
+    // const workspaceFolders = params.workspaceFolders || [];
+    // const workspaceRoot =
+    //   workspaceFolders.length > 0
+    //     ? new URL(workspaceFolders[0].uri).pathname
+    //     : process.cwd();
+    const workspaceRoot = findProjectRoot();
 
     // TODO: node_modulesを現在ファイルからworkspaceのrootまで順番に探すことで、
     // monorepoの場合にも対応できるようにする
@@ -52,9 +54,24 @@ async function init() {
       "dist",
       "types",
     );
-    const files = fs.readdirSync(workspaceSrcRoot);
-    const dtsFiles = files.filter((file) => file.endsWith(".d.ts"));
-    extraTypings = dtsFiles.map((file) => path.join(workspaceSrcRoot, file));
+    // ディレクトリの有無の判別を入れる
+    if (!fs.existsSync(workspaceSrcRoot)) {
+      // もしなければ {extensionのdir}/node_modulesを探す処理を追加する
+      const extensionDir = path.dirname(__dirname);
+      const alternativeSrcRoot = path.join(extensionDir, "node_modules");
+      if (fs.existsSync(alternativeSrcRoot)) {
+        const files = fs.readdirSync(alternativeSrcRoot);
+        const dtsFiles = files.filter((file) => file.endsWith(".d.ts"));
+        extraTypings = dtsFiles.map((file) =>
+          path.join(alternativeSrcRoot, file),
+        );
+      }
+    } else {
+      const files = fs.readdirSync(workspaceSrcRoot);
+      const dtsFiles = files.filter((file) => file.endsWith(".d.ts"));
+      extraTypings = dtsFiles.map((file) => path.join(workspaceSrcRoot, file));
+    }
+    console.log(`extra typings: `, extraTypings);
 
     return {
       capabilities: {
