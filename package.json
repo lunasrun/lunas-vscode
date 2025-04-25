@@ -12,7 +12,7 @@
     "url": "https://github.com/lunasdev/lunas.git"
   },
   "scripts": {
-    "package": "tsc && vsce package"
+    "package": "ts-node esbuild.ts && vsce package"
   },
   "categories": [
     "Programming Languages"
@@ -61,6 +61,7 @@
     ]
   },
   "dependencies": {
+    "lunas": "^0.0.1-beta.8",
     "lunas-formatter": "^0.0.1-beta.4",
     "typescript": "^5.7.3",
     "vscode-languageclient": "^9.0.1",
