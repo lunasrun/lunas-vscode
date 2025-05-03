@@ -16,7 +16,7 @@ async function main() {
     sourcesContent: false,
     platform: "node",
     outdir: "dist", // 複数ファイル出力のため outdir を使用
-    external: ["vscode"],
+    external: ["vscode", "prettier"],
     logLevel: "warning",
     plugins: [esbuildProblemMatcherPlugin],
   });
