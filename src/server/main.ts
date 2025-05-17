@@ -33,6 +33,23 @@ import {
   getCSSLanguageService,
   Stylesheet,
 } from "vscode-css-languageservice/lib/esm/cssLanguageService";
+import {
+  extractScript,
+  extractInputs,
+  extractHTML,
+  extractStyle,
+  findAndReadTSConfig,
+  getVirtualFilePath,
+  setActiveFileFromUri,
+} from "./utils/lunas-blocks";
+
+// 仮想ファイルの内容とバージョンを管理
+const scriptContents = new Map<string, string>();
+const scriptVersions = new Map<string, number>();
+const tsConfigCache = new Map<string, ts.ParsedCommandLine>();
+
+// 現在リクエスト対象のファイルの仮想パスを保持
+let activeVirtualFile: string | null = null;
 
 async function init() {
   // LSP の接続作成
@@ -111,142 +128,6 @@ async function init() {
       },
     };
   });
-
-  // スクリプトブロック抽出（ブロックがなければ空文字列を返す）
-  function extractScript(text: string): {
-    script: string;
-    startLine: number;
-    endLine: number;
-  } {
-    const scriptMatch = text.match(/script:\s*\n([\s\S]*?)(?:\n\s*style:|$)/);
-    if (!scriptMatch) {
-      return { script: "", startLine: 0, endLine: 0 };
-    }
-    const scriptStart = text.indexOf("script:");
-    // startLine は "script:" 行までの行数
-    const startLine = text.substring(0, scriptStart).split("\n").length;
-    const scriptLines = scriptMatch[1]
-      .split("\n")
-      .map((line) => (line.startsWith("  ") ? line.slice(2) : line));
-    return {
-      script: scriptLines.join("\n"),
-      startLine,
-      endLine: startLine + scriptLines.length - 1,
-    };
-  }
-
-  // @input の解析
-  function extractInputs(text: string): Record<string, string> {
-    const inputRegex = /@input\s+([\w\d_]+)\s*:\s*([\w\d_]+)/g;
-    const inputs: Record<string, string> = {};
-    let match;
-    while ((match = inputRegex.exec(text)) !== null) {
-      const [, name, type] = match;
-      inputs[name] = type;
-    }
-    return inputs;
-  }
-
-  // --- Helpers for HTML & CSS block extraction ---
-  function extractHTML(text: string): {
-    html: string;
-    startLine: number;
-    endLine: number;
-    indent: number;
-  } {
-    const htmlRegex = /html:\s*\n([\s\S]*?)(?:\n\s*(?:script:|style:)|$)/;
-    htmlRegex.lastIndex = 0;
-    const match = htmlRegex.exec(text);
-    if (!match) return { html: "", startLine: 0, endLine: 0, indent: 0 };
-    const full = match[1];
-    // Compute startLine from regex match index for precise block position
-    const htmlKeywordIndex = match.index ?? text.indexOf("html:");
-    const startLine = text.substring(0, htmlKeywordIndex).split("\n").length;
-    const rawLines = full.split("\n");
-    // Calculate minimal indent across non-empty lines
-    const indentCounts = rawLines
-      .filter((l) => l.trim() !== "")
-      .map((l) => l.match(/^\s*/)![0].length);
-    const minIndent = indentCounts.length > 0 ? Math.min(...indentCounts) : 0;
-    console.debug(`[extractHTML] removing uniform indent: ${minIndent}`);
-    const lines = rawLines.map((line) => {
-      // Remove the minimal indent but preserve rest of content
-      const content = line.startsWith(" ".repeat(minIndent))
-        ? line.slice(minIndent)
-        : line;
-      console.debug(`[extractHTML] content: ${JSON.stringify(content)}`);
-      // Sanitize malformed closing tags like "<//div" or "<//div>"
-      const sanitized = content.replace(/<\/\/(\w+)>?/g, "</$1>");
-      if (sanitized !== content) {
-        console.warn(
-          `[extractHTML] sanitized malformed tag: ${JSON.stringify(sanitized)}`,
-        );
-      }
-      return sanitized;
-    });
-    return {
-      html: lines.join("\n"),
-      startLine,
-      endLine: startLine + lines.length - 1,
-      indent: minIndent,
-    };
-  }
-  function extractStyle(text: string): {
-    css: string;
-    startLine: number;
-    endLine: number;
-  } {
-    const match = text.match(/style:\s*\n([\s\S]*?)(?:\n\s*(script:|html:)|$)/);
-    if (!match) return { css: "", startLine: 0, endLine: 0 };
-    const full = match[1];
-    const startLine = text
-      .substring(0, text.indexOf("style:"))
-      .split("\n").length;
-    const lines = full
-      .split("\n")
-      .map((line) => (line.startsWith("  ") ? line.slice(2) : line));
-    return {
-      css: lines.join("\n"),
-      startLine,
-      endLine: startLine + lines.length - 1,
-    };
-  }
-
-  function findAndReadTSConfig(startPath: string): ts.ParsedCommandLine {
-    let dir = path.dirname(startPath);
-    while (true) {
-      const configPath = path.join(dir, "tsconfig.json");
-      if (fs.existsSync(configPath)) {
-        const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
-        if (configFile.error) throw new Error("Failed to read tsconfig.json");
-        return ts.parseJsonConfigFileContent(configFile.config, ts.sys, dir);
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    return ts.parseJsonConfigFileContent({}, ts.sys, process.cwd());
-  }
-
-  // 仮想ファイルの内容とバージョンを管理
-  const scriptContents = new Map<string, string>();
-  const scriptVersions = new Map<string, number>();
-  const tsConfigCache = new Map<string, ts.ParsedCommandLine>();
-
-  // 現在リクエスト対象のファイルの仮想パスを保持
-  let activeVirtualFile: string | null = null;
-
-  function getVirtualFilePath(documentUri: string): string {
-    const realPath = new URL(documentUri).pathname;
-    const parsedPath = path.parse(realPath);
-    const virtualFileName = `.${parsedPath.name}.virtual.ts`;
-    return path.join(parsedPath.dir, virtualFileName);
-  }
-
-  // リクエスト前に対象ファイルを activeVirtualFile に設定するヘルパー
-  function setActiveFileFromUri(uri: string) {
-    activeVirtualFile = getVirtualFilePath(uri);
-  }
 
   // TypeScript 言語サービスホスト（対象は activeVirtualFile のみ）
   const tsHost: ts.LanguageServiceHost = {
@@ -386,7 +267,10 @@ async function init() {
 
   // ホバー処理
   connection.onHover((params): Hover | null => {
-    setActiveFileFromUri(params.textDocument.uri);
+    setActiveFileFromUri(
+      params.textDocument.uri,
+      (v) => (activeVirtualFile = v),
+    );
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
     const text = doc.getText();
@@ -427,7 +311,10 @@ async function init() {
 
   // 定義ジャンプ処理
   connection.onDefinition((params): Location[] | null => {
-    setActiveFileFromUri(params.textDocument.uri);
+    setActiveFileFromUri(
+      params.textDocument.uri,
+      (v) => (activeVirtualFile = v),
+    );
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
     const text = doc.getText();
@@ -694,7 +581,7 @@ async function init() {
     }
 
     // Fallback to TypeScript completions
-    setActiveFileFromUri(uri);
+    setActiveFileFromUri(uri, (v) => (activeVirtualFile = v));
     const { script, startLine } = extractScript(text);
     if (!script) return [];
     const localPosition = getLocationInBlock(
