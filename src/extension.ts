@@ -13,7 +13,9 @@ let client: LanguageClient;
 
 export function activate(context: vscode.ExtensionContext) {
   // LSP サーバーのパスを指定
-  const serverModule = context.asAbsolutePath(path.join("dist", "server.js"));
+  const serverModule = context.asAbsolutePath(
+    path.join("dist", "server", "main.js"),
+  );
 
   const PROJECT_ROOT = findProjectRoot();
 

@@ -4,7 +4,7 @@ const production = process.argv.includes("--production");
 const watch = process.argv.includes("--watch");
 
 // ビルド対象のエントリーポイント
-const entryPoints = ["src/extension.ts", "src/server.ts"];
+const entryPoints = ["src/extension.ts", "src/server/main.ts"];
 
 async function main() {
   const ctx = await esbuild.context({
