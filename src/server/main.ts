@@ -2,43 +2,34 @@ import {
   createConnection,
   TextDocuments,
   ProposedFeatures,
-  InitializeParams,
   TextDocumentSyncKind,
-  CompletionItem,
   CompletionItemKind,
   InsertTextFormat,
-  Diagnostic,
   DiagnosticSeverity,
-  Hover,
-  Location,
   TextEdit,
   Range,
-  Position, // Added for clarity
-  CompletionParams, // Added for clarity
-  HoverParams, // Added for clarity
-  DefinitionParams, // Added for clarity
-  CompletionItemTag,
+  Position,
+  // Explicitly import types used for clarity
+  InitializeParams,
+  CompletionParams,
+  HoverParams,
+  DefinitionParams,
+  CompletionItem,
+  Hover,
+  Location,
+  Diagnostic,
 } from "vscode-languageserver/node";
 import * as fs from "fs";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import * as ts from "typescript";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import {
-  getLocationInBlock,
-  // textLocationVisualizer, // Not used in the final provided code snippet by user
-} from "./utils/text-location";
-
-// HTML & CSS language services
+import { getLocationInBlock } from "./utils/text-location";
 import {
   getLanguageService as getHTMLLanguageService,
-  // HTMLDocument, // Not directly used, parseHTMLDocument is used
-  TokenType,
+  Node, // Import Node type from html language service
 } from "vscode-html-languageservice/lib/esm/htmlLanguageService";
-import {
-  getCSSLanguageService,
-  // Stylesheet, // Not directly used, parseStylesheet is used
-} from "vscode-css-languageservice/lib/esm/cssLanguageService";
+import { getCSSLanguageService } from "vscode-css-languageservice/lib/esm/cssLanguageService";
 import {
   extractScript,
   extractInputs,
@@ -49,15 +40,12 @@ import {
   setActiveFileFromUri,
 } from "./utils/lunas-blocks";
 
-// 仮想ファイルの内容とバージョンを管理
 const scriptContents = new Map<string, string>();
 const scriptVersions = new Map<string, number>();
 const tsConfigCache = new Map<string, ts.ParsedCommandLine>();
-
-// 現在リクエスト対象のファイルの仮想パスを保持
 let activeVirtualFile: string | null = null;
 
-// Helper to map TypeScript completion kinds to LSP completion kinds
+// (mapTsCompletionKind function remains the same as your provided code)
 function mapTsCompletionKind(kind: ts.ScriptElementKind): CompletionItemKind {
   switch (kind) {
     case ts.ScriptElementKind.primitiveType:
@@ -77,13 +65,13 @@ function mapTsCompletionKind(kind: ts.ScriptElementKind): CompletionItemKind {
     case ts.ScriptElementKind.constructSignatureElement:
       return CompletionItemKind.Function;
     case ts.ScriptElementKind.parameterElement:
-      return CompletionItemKind.TypeParameter; // Or Variable
+      return CompletionItemKind.TypeParameter;
     case ts.ScriptElementKind.moduleElement:
     case ts.ScriptElementKind.externalModuleName:
       return CompletionItemKind.Module;
     case ts.ScriptElementKind.classElement:
-    case ts.ScriptElementKind.typeElement: // type alias
-      return CompletionItemKind.Class; // Or Struct, TypeParameter for type alias
+    case ts.ScriptElementKind.typeElement:
+      return CompletionItemKind.Class;
     case ts.ScriptElementKind.interfaceElement:
       return CompletionItemKind.Interface;
     case ts.ScriptElementKind.enumElement:
@@ -94,6 +82,7 @@ function mapTsCompletionKind(kind: ts.ScriptElementKind): CompletionItemKind {
       return CompletionItemKind.Reference;
     case ts.ScriptElementKind.scriptElement:
       return CompletionItemKind.File;
+    // Corrected: memberVariableElement was listed twice. Assuming Property was intended.
     case ts.ScriptElementKind.memberVariableElement:
     case ts.ScriptElementKind.memberGetAccessorElement:
     case ts.ScriptElementKind.memberSetAccessorElement:
@@ -101,23 +90,20 @@ function mapTsCompletionKind(kind: ts.ScriptElementKind): CompletionItemKind {
     case ts.ScriptElementKind.constructorImplementationElement:
       return CompletionItemKind.Constructor;
     case ts.ScriptElementKind.string:
-      return CompletionItemKind.Text; // Or Value
+      return CompletionItemKind.Text;
     default:
       return CompletionItemKind.Text;
   }
 }
 
-// --- BEGINNING OF LSP SERVER CODE ---
 async function init() {
   const connection = createConnection(ProposedFeatures.all);
   const documents: TextDocuments<TextDocument> = new TextDocuments(
     TextDocument,
   );
-
   const htmlService = getHTMLLanguageService({});
   const cssService = getCSSLanguageService({});
-
-  const INDENT_SIZE = 2; // Assuming this is the script block indent. HTML indent might differ.
+  const INDENT_SIZE = 2;
   let totalAdditionalPartChars = 0;
   let totalAdditionalPartLines = 0;
   let extraTypings: string[] = [];
@@ -152,7 +138,6 @@ async function init() {
       const dtsFiles = files.filter((file) => file.endsWith(".d.ts"));
       extraTypings = dtsFiles.map((file) => path.join(workspaceSrcRoot, file));
     }
-
     return {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Incremental,
@@ -170,7 +155,7 @@ async function init() {
             "{",
             ":",
             "@",
-          ], // Added "@" as trigger char
+          ],
         },
         hoverProvider: true,
         definitionProvider: true,
@@ -198,7 +183,6 @@ async function init() {
       }
       if (fs.existsSync(fileName)) {
         try {
-          // Add try-catch for robustness
           return ts.ScriptSnapshot.fromString(
             fs.readFileSync(fileName, "utf-8"),
           );
@@ -219,7 +203,11 @@ async function init() {
       const config = tsConfigCache.get(dir);
       return config
         ? config.options
-        : { ...ts.getDefaultCompilerOptions(), jsx: ts.JsxEmit.Preserve }; // Added JSX for potential TSX like features
+        : {
+            ...ts.getDefaultCompilerOptions(),
+            jsx: ts.JsxEmit.Preserve,
+            allowJs: true,
+          }; // allowJs might be useful
     },
     getDefaultLibFileName: (options) => {
       const userTSLib = path.join(
@@ -244,7 +232,6 @@ async function init() {
       fs.existsSync(fileName) ? fs.readFileSync(fileName, "utf-8") : undefined,
     fileExists: (fileName) =>
       scriptContents.has(fileName) || fs.existsSync(fileName),
-    // Added for better module resolution if needed, can be expanded
     resolveModuleNames: (moduleNames, containingFile) => {
       const resolvedModules: ts.ResolvedModule[] = [];
       const compilerOptions = tsHost.getCompilationSettings();
@@ -253,10 +240,7 @@ async function init() {
           moduleName,
           containingFile,
           compilerOptions,
-          {
-            fileExists: tsHost.fileExists,
-            readFile: tsHost.readFile,
-          },
+          { fileExists: tsHost.fileExists, readFile: tsHost.readFile },
         );
         if (result.resolvedModule) {
           resolvedModules.push(result.resolvedModule);
@@ -268,7 +252,134 @@ async function init() {
 
   const tsService = ts.createLanguageService(tsHost);
 
-  documents.onDidChangeContent((change) => {
+  /**
+   * Parses a :for attribute value string.
+   * Examples:
+   * "[index, player] of sortedPlayers().entries()" -> { variables: "[index, player]", isDestructuring: true, iterable: "sortedPlayers().entries()", operator: "of" }
+   * "item of getItems()" -> { variables: "item", isDestructuring: false, iterable: "getItems()", operator: "of" }
+   * "key in object" -> { variables: "key", isDestructuring: false, iterable: "object", operator: "in" }
+   * "let [k, v] of collection" -> { variables: "[k,v]", keyword: "let", ... }
+   */
+  function parseForExpression(expression: string): {
+    keyword?: "let" | "const" | "var";
+    variables: string;
+    isDestructuring: boolean;
+    operator: "of" | "in";
+    iterable: string;
+  } | null {
+    const ofMatch = expression.match(
+      /^(let|const|var)?\s*([\[\]\w\s,{}:]+?)\s+of\s+(.+)$/i,
+    );
+    if (ofMatch) {
+      const keyword = ofMatch[1] as "let" | "const" | "var" | undefined;
+      const variables = ofMatch[2].trim();
+      return {
+        keyword,
+        variables,
+        isDestructuring: variables.startsWith("[") || variables.startsWith("{"),
+        operator: "of",
+        iterable: ofMatch[3].trim(),
+      };
+    }
+    const inMatch = expression.match(
+      /^(let|const|var)?\s*(\w+?)\s+in\s+(.+)$/i,
+    );
+    if (inMatch) {
+      const keyword = inMatch[1] as "let" | "const" | "var" | undefined;
+      const variables = inMatch[2].trim();
+      return {
+        keyword,
+        variables,
+        isDestructuring: false, // "in" operator typically doesn't use destructuring for the key
+        operator: "in",
+        iterable: inMatch[3].trim(),
+      };
+    }
+    return null;
+  }
+
+  function prepareTemporaryScriptForExpression(
+    originalScriptContent: string,
+    expression: string,
+    htmlNodeForScope: Node | undefined, // Can be undefined if not in a node context
+    htmlDoc: TextDocument, // The HTML part as a TextDocument
+    htmlServiceInstance: ReturnType<typeof getHTMLLanguageService>, // Pass the instance
+    attributeName?: string, // To know if it's a :for or other attribute
+    expressionWithinAttributeValue?: string, // The specific part of expression being analyzed if inside a complex attr
+  ): {
+    tempScript: string;
+    expressionOffsetInTempScript: number;
+    forVars: { name: string; type: string }[];
+  } {
+    let prefix = originalScriptContent + "\n;(() => {\n";
+    const forVars: { name: string; type: string }[] = []; // To store variables declared by :for
+
+    // Traverse up the HTML AST to find ancestor :for scopes
+    let currentHtmlNode = htmlNodeForScope;
+    const visitedNodes = new Set<Node>(); // Prevent infinite loops
+
+    while (currentHtmlNode && !visitedNodes.has(currentHtmlNode)) {
+      visitedNodes.add(currentHtmlNode);
+      const forAttributeValue = currentHtmlNode.attributes?.[":for"];
+      if (forAttributeValue) {
+        const parsedFor = parseForExpression(forAttributeValue.slice(1, -1)); // remove quotes
+        if (parsedFor) {
+          // Declare loop variables in the temporary script for type checking context
+          // This is a simplified declaration; actual type inference from iterable is complex.
+          const declarationKeyword = parsedFor.keyword || "let"; // Default to 'let'
+          prefix += `  ${declarationKeyword} ${parsedFor.variables}: any;\n`; // Use 'any' for now, TS will infer if possible from the loop below
+          if (parsedFor.isDestructuring) {
+            // Crude way to get individual var names from destructuring string
+            parsedFor.variables
+              .replace(/[\[\]\{\}\s,:]+/g, " ")
+              .trim()
+              .split(" ")
+              .forEach((v) => {
+                if (v) forVars.push({ name: v, type: "any" });
+              });
+          } else {
+            forVars.push({ name: parsedFor.variables, type: "any" });
+          }
+        }
+      }
+      currentHtmlNode = currentHtmlNode.parent;
+    }
+
+    let scriptToAnalyze = expression;
+    if (attributeName === ":for") {
+      // If analyzing the :for attribute itself, wrap it in a for loop for better type checking
+      const parsedFor = parseForExpression(expression);
+      if (parsedFor) {
+        // The expression we want to get diagnostics for is often the 'iterable' part.
+        // Or, if cursor is on variables, it's a declaration.
+        // For simplicity, let's assume `expression` is the iterable part if cursor is there.
+        // This needs refinement based on cursor position within the :for value.
+        const loopKeyword = parsedFor.keyword || "let";
+        // We create a valid loop to check the iterable part.
+        // The actual variables `parsedFor.variables` will be defined by this loop.
+        scriptToAnalyze = `
+  ${loopKeyword} __iterable_to_check__ = ${parsedFor.iterable};
+  for (${loopKeyword} ${parsedFor.variables} ${parsedFor.operator} __iterable_to_check__) {
+    // Body of the loop, could put the element's content here for full check
+  }
+  return ${parsedFor.iterable}; // Return the iterable for analysis if expression is the iterable
+`;
+      }
+    }
+
+    // Ensure expression to analyze is the one from `expressionWithinAttributeValue` if provided
+    const finalExpressionToAnalyze =
+      expressionWithinAttributeValue || expression;
+
+    const tempScript =
+      prefix + "return (" + finalExpressionToAnalyze + ");\n})();\n";
+    const expressionOffsetInTempScript = prefix.length + "return (".length;
+
+    return { tempScript, expressionOffsetInTempScript, forVars };
+  }
+
+  documents.onDidChangeContent(async (change) => {
+    // Make async for potential async operations
     const text = change.document.getText();
     const uri = change.document.uri;
     const virtualPath = getVirtualFilePath(uri);
@@ -280,8 +391,7 @@ async function init() {
       Object.entries(inputs)
         .map(([name, type]) => `declare let ${name}: ${type};`)
         .join("\n") + "\n";
-
-    totalAdditionalPartChars = inputDeclarations.length; // This is for script block context
+    totalAdditionalPartChars = inputDeclarations.length;
     totalAdditionalPartLines = inputDeclarations.split("\n").length - 1;
     const updatedScript = `${inputDeclarations}${script}`;
 
@@ -292,35 +402,37 @@ async function init() {
         (scriptVersions.get(virtualPath) || 0) + 1,
       );
     }
-
-    const scriptBlockStartLine = startLine + 1; // Actual start line of script content
-
+    const scriptBlockStartLine = startLine + 1;
     const diagnostics: Diagnostic[] = [];
-    // Ensure program is updated
-    tsService.getProgram(); // This helps ensure the program is up-to-date with latest script versions.
 
+    // Ensure TS program is up-to-date
+    tsService.getProgram();
+
+    // Script block diagnostics
     const syntaxDiagnostics = tsService.getSyntacticDiagnostics(virtualPath);
     const semanticDiagnostics = tsService.getSemanticDiagnostics(virtualPath);
-
     [...syntaxDiagnostics, ...semanticDiagnostics].forEach((tsDiag) => {
       if (
         tsDiag.file &&
         tsDiag.start !== undefined &&
         tsDiag.file.fileName === virtualPath
       ) {
-        // Process only diagnostics for the current virtual file
-        // Check if the diagnostic is within the input declarations part
-        if (tsDiag.start < totalAdditionalPartChars) return; // Skip diagnostics from injected input declarations
-
+        if (tsDiag.start < totalAdditionalPartChars) return; // Skip errors from injected inputs
         const diagStartPos = tsDiag.file.getLineAndCharacterOfPosition(
           tsDiag.start,
         );
         const diagEndPos = tsDiag.file.getLineAndCharacterOfPosition(
           tsDiag.start + (tsDiag.length || 0),
         );
-
         diagnostics.push({
-          severity: DiagnosticSeverity.Error, // Map tsDiag.category
+          severity:
+            tsDiag.category === ts.DiagnosticCategory.Error
+              ? DiagnosticSeverity.Error
+              : tsDiag.category === ts.DiagnosticCategory.Warning
+                ? DiagnosticSeverity.Warning
+                : tsDiag.category === ts.DiagnosticCategory.Suggestion
+                  ? DiagnosticSeverity.Hint
+                  : DiagnosticSeverity.Information,
           range: {
             start: {
               line:
@@ -328,7 +440,7 @@ async function init() {
                 totalAdditionalPartLines +
                 scriptBlockStartLine -
                 1,
-              character: diagStartPos.character + INDENT_SIZE, // Assuming script is indented
+              character: diagStartPos.character + INDENT_SIZE,
             },
             end: {
               line:
@@ -336,117 +448,266 @@ async function init() {
                 totalAdditionalPartLines +
                 scriptBlockStartLine -
                 1,
-              character: diagEndPos.character + INDENT_SIZE, // Assuming script is indented
+              character: diagEndPos.character + INDENT_SIZE,
             },
           },
           message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
           source: "Lunas TS",
+          code: tsDiag.code,
         });
       }
     });
-    // connection.sendDiagnostics({ uri, diagnostics }); // <-- moved to end after template diagnostics
 
-    // --- Template Expression Diagnostics ---
+    // HTML Template Diagnostics
     const { html, startLine: hStart, indent: htmlIndent } = extractHTML(text);
-    console.log("[LunasTSDiag] HTML Extracted:", {
-      snippet: html.substring(0, 100),
-    });
-    if (html && virtualPath) {
-      console.log("[LunasTSDiag] Entering template diagnostics. virtualPath=", virtualPath);
+    if (html && virtualPath && scriptContents.has(virtualPath)) {
       const htmlDoc = TextDocument.create(
-        uri,
+        `${uri}__html_template__`,
         "html",
         change.document.version,
         html,
       );
       const parsedHtmlDoc = htmlService.parseHTMLDocument(htmlDoc);
+      const originalScriptContent = scriptContents.get(virtualPath)!; // Should exist
 
-      function traverseHtml(node: any) {
-        console.log("[LunasTSDiag] Traversing node:", {
-          tag: node.tagName || "text",
-          attrs: node.attributes,
-        });
+      function traverseHtmlNodesForDiagnostics(node: Node) {
         if (node.attributes) {
           for (const attrName in node.attributes) {
+            // Check attributes like :prop, @event, :for, :if
             if (attrName.startsWith(":") || attrName.startsWith("@")) {
-              const raw = node.attributes[attrName]; // e.g. '"[index,player] of players.entries()"'
-              if (!raw) continue;
-              const exprValue = raw.slice(1, -1); // remove surrounding quotes
-              // Compute start of expression in HTML block
-              const nodeText = html.substring(node.start, node.startTagEnd ?? node.end);
-              const attrFull = `${attrName}=${raw}`;
-              const posInNode = nodeText.indexOf(attrFull);
-              if (posInNode === -1) continue;
-              const valueOffset = posInNode + attrName.length + 2; // skip attrName and ="
-              const exprStartOffset = node.start + valueOffset;
-              const exprStartPos = htmlDoc.positionAt(exprStartOffset);
-              // Prepare temporary script
+              const attributeValueWithQuotes = node.attributes[attrName];
+              if (!attributeValueWithQuotes) continue;
+              const attributeValue = attributeValueWithQuotes.slice(1, -1); // Remove quotes
+
+              // Determine the exact start of the expression within the attribute value in the HTML block
+              const nodeText = html.substring(
+                node.start,
+                node.startTagEnd ?? node.end,
+              );
+              const attrFullString = `${attrName}=${attributeValueWithQuotes}`;
+              const attrStartInNodeText = nodeText.indexOf(attrFullString);
+              if (attrStartInNodeText === -1) continue;
+              const expressionStartInNodeText =
+                attrStartInNodeText + attrName.length + 2; // Past ="
+              const expressionStartOffsetInHtmlBlock =
+                node.start + expressionStartInNodeText;
+
+              // Special handling for :for to analyze the iterable part
+              let expressionToAnalyze = attributeValue;
+              let subExpressionOffsetWithinAttrValue = 0;
+
+              if (attrName === ":for") {
+                const parsedFor = parseForExpression(attributeValue);
+                if (parsedFor) {
+                  expressionToAnalyze = parsedFor.iterable;
+                  subExpressionOffsetWithinAttrValue =
+                    attributeValue.lastIndexOf(parsedFor.iterable);
+                  // If parsing failed or iterable is empty, skip TS check for it
+                  if (
+                    subExpressionOffsetWithinAttrValue === -1 ||
+                    !parsedFor.iterable
+                  )
+                    continue;
+                } else {
+                  continue; // Invalid :for syntax, skip TS check for now
+                }
+              }
+
               const { tempScript, expressionOffsetInTempScript } =
                 prepareTemporaryScriptForExpression(
-                  scriptContents.get(virtualPath)!,
-                  exprValue,
+                  originalScriptContent,
+                  attributeValue, // Pass the full attribute value for context to prepareTemporaryScript
                   node,
                   htmlDoc,
-                  htmlService
+                  htmlService,
+                  attrName,
+                  expressionToAnalyze, // Pass the specific part (e.g., iterable)
                 );
-              // Swap script and get TS errors
-              const original = scriptContents.get(virtualPath)!;
-              const originalVer = scriptVersions.get(virtualPath)!;
+
+              const originalVersion = scriptVersions.get(virtualPath)!;
               scriptContents.set(virtualPath, tempScript);
-              scriptVersions.set(virtualPath, originalVer + 1);
-              const tsDiagnostics = [
+              scriptVersions.set(virtualPath, originalVersion + 1);
+
+              // Analyze the specific part (e.g., iterable in :for)
+              // The offset for diagnostics needs to be within this `expressionToAnalyze`
+              // which is placed inside the `return (...)` in `tempScript`.
+              const analysisTargetOffset =
+                expressionOffsetInTempScript +
+                (expressionToAnalyze.length > 0 ? 0 : -1); // Start of the expressionToAnalyze
+              // The ts.getSyntacticDiagnostics / getSemanticDiagnostics takes the filename, not specific offset
+
+              const templateTsDiagnostics = [
                 ...tsService.getSyntacticDiagnostics(virtualPath),
-                ...tsService.getSemanticDiagnostics(virtualPath)
+                ...tsService.getSemanticDiagnostics(virtualPath),
               ];
-              // Restore original
-              scriptContents.set(virtualPath, original);
-              scriptVersions.set(virtualPath, originalVer + 2);
-              // Map diagnostics back to HTML
-              tsDiagnostics.forEach((tsDiag) => {
-                if (tsDiag.start === undefined) return;
-                const relStart = tsDiag.start - expressionOffsetInTempScript;
-                const htmlErrorStartInHtml = htmlDoc.offsetAt(exprStartPos) + relStart;
-                const htmlErrorEndInHtml = htmlErrorStartInHtml + (tsDiag.length || 1);
 
-                // Compute line/char in snippet for start
-                const snippetStartPrefix = html.slice(0, htmlErrorStartInHtml);
-                const errorLineInSnippet = snippetStartPrefix.split('\n').length - 1;
-                const charInLine = snippetStartPrefix.split('\n').pop()!.length;
+              scriptContents.set(virtualPath, originalScriptContent);
+              scriptVersions.set(virtualPath, originalVersion + 2);
 
-                // Compute line/char in snippet for end
-                const snippetEndPrefix = html.slice(0, htmlErrorEndInHtml);
-                const errorLineInSnippetEnd = snippetEndPrefix.split('\n').length - 1;
-                const charInLineEnd = snippetEndPrefix.split('\n').pop()!.length;
+              templateTsDiagnostics.forEach((tsDiag) => {
+                if (
+                  tsDiag.file &&
+                  tsDiag.start !== undefined &&
+                  tsDiag.file.fileName === virtualPath
+                ) {
+                  // Check if the diagnostic is within the analyzed expression part of the temp script
+                  const returnStatementStart =
+                    tempScript.indexOf("return (") + "return (".length;
+                  const returnStatementEnd = tempScript.lastIndexOf(");");
+                  if (
+                    tsDiag.start >= returnStatementStart &&
+                    tsDiag.start + (tsDiag.length || 0) <= returnStatementEnd
+                  ) {
+                    const relativeErrorStartInExpression =
+                      tsDiag.start - returnStatementStart;
+                    const relativeErrorEndInExpression =
+                      relativeErrorStartInExpression + (tsDiag.length || 0);
 
-                // Map to original document positions
-                const startPos = Position.create(
-                  hStart + errorLineInSnippet,
-                  htmlIndent + charInLine
-                );
-                const endPos = Position.create(
-                  hStart + errorLineInSnippetEnd,
-                  htmlIndent + charInLineEnd
-                );
+                    // Map this relative position back to the original HTML attribute value
+                    const errorStartOffsetInHtmlAttr =
+                      expressionStartOffsetInHtmlBlock +
+                      subExpressionOffsetWithinAttrValue +
+                      relativeErrorStartInExpression;
+                    const errorEndOffsetInHtmlAttr =
+                      expressionStartOffsetInHtmlBlock +
+                      subExpressionOffsetWithinAttrValue +
+                      relativeErrorEndInExpression;
 
-                diagnostics.push({
-                  severity: DiagnosticSeverity.Error,
-                  range: { start: startPos, end: endPos },
-                  message: ts.flattenDiagnosticMessageText(tsDiag.messageText, '\n'),
-                  source: 'Lunas Template TS',
-                });
+                    const diagStartPosInHtml = htmlDoc.positionAt(
+                      errorStartOffsetInHtmlAttr,
+                    );
+                    const diagEndPosInHtml = htmlDoc.positionAt(
+                      errorEndOffsetInHtmlAttr,
+                    );
+
+                    diagnostics.push({
+                      severity:
+                        tsDiag.category === ts.DiagnosticCategory.Error
+                          ? DiagnosticSeverity.Error
+                          : tsDiag.category === ts.DiagnosticCategory.Warning
+                            ? DiagnosticSeverity.Warning
+                            : DiagnosticSeverity.Information,
+                      range: {
+                        start: {
+                          line: hStart + diagStartPosInHtml.line,
+                          character: htmlIndent + diagStartPosInHtml.character,
+                        },
+                        end: {
+                          line: hStart + diagEndPosInHtml.line,
+                          character: htmlIndent + diagEndPosInHtml.character,
+                        },
+                      },
+                      message: ts.flattenDiagnosticMessageText(
+                        tsDiag.messageText,
+                        "\n",
+                      ),
+                      source: "Lunas Template TS",
+                      code: tsDiag.code,
+                    });
+                  }
+                }
               });
             }
           }
         }
+
+        // Check interpolations: ${expression}
+        // Check for text nodes (nodeType === 3)
+        // html-languageservice Node does not have nodeType, so check for text node by tag === undefined
+        if (node.tag === undefined) {
+          // Text node
+          const textContent = html.substring(node.start, node.end);
+          const interpolationRegex = /\$\{([^}]*)\}/g;
+          let match;
+          while ((match = interpolationRegex.exec(textContent)) !== null) {
+            const expression = match[1];
+            if (!expression.trim()) continue;
+
+            const expressionStartInTextNode = match.index + 2;
+            const expressionOffsetInHtmlBlock =
+              node.start + expressionStartInTextNode;
+
+            const { tempScript, expressionOffsetInTempScript } =
+              prepareTemporaryScriptForExpression(
+                originalScriptContent,
+                expression,
+                node.parent,
+                htmlDoc,
+                htmlService,
+              );
+
+            const originalVersion = scriptVersions.get(virtualPath)!;
+            scriptContents.set(virtualPath, tempScript);
+            scriptVersions.set(virtualPath, originalVersion + 1);
+
+            const templateTsDiagnostics = [
+              ...tsService.getSyntacticDiagnostics(virtualPath),
+              ...tsService.getSemanticDiagnostics(virtualPath),
+            ];
+            scriptContents.set(virtualPath, originalScriptContent);
+            scriptVersions.set(virtualPath, originalVersion + 2);
+
+            templateTsDiagnostics.forEach((tsDiag) => {
+              if (
+                tsDiag.file &&
+                tsDiag.start !== undefined &&
+                tsDiag.file.fileName === virtualPath
+              ) {
+                const returnStatementStart =
+                  tempScript.indexOf("return (") + "return (".length;
+                const returnStatementEnd = tempScript.lastIndexOf(");");
+                if (
+                  tsDiag.start >= returnStatementStart &&
+                  tsDiag.start + (tsDiag.length || 0) <= returnStatementEnd
+                ) {
+                  const relativeErrorStartInExpression =
+                    tsDiag.start - returnStatementStart;
+                  const relativeErrorEndInExpression =
+                    relativeErrorStartInExpression + (tsDiag.length || 0);
+
+                  const errorStartOffsetInHtml =
+                    expressionOffsetInHtmlBlock +
+                    relativeErrorStartInExpression;
+                  const errorEndOffsetInHtml =
+                    expressionOffsetInHtmlBlock + relativeErrorEndInExpression;
+
+                  const diagStartPosInHtml = htmlDoc.positionAt(
+                    errorStartOffsetInHtml,
+                  );
+                  const diagEndPosInHtml =
+                    htmlDoc.positionAt(errorEndOffsetInHtml);
+                  diagnostics.push({
+                    severity: DiagnosticSeverity.Error,
+                    range: {
+                      start: {
+                        line: hStart + diagStartPosInHtml.line,
+                        character: htmlIndent + diagStartPosInHtml.character,
+                      },
+                      end: {
+                        line: hStart + diagEndPosInHtml.line,
+                        character: htmlIndent + diagEndPosInHtml.character,
+                      },
+                    },
+                    message: ts.flattenDiagnosticMessageText(
+                      tsDiag.messageText,
+                      "\n",
+                    ),
+                    source: "Lunas Template TS",
+                    code: tsDiag.code,
+                  });
+                }
+              }
+            });
+          }
+        }
+
         if (node.children) {
-          node.children.forEach(traverseHtml);
+          node.children.forEach(traverseHtmlNodesForDiagnostics);
         }
       }
-      // Start traversal at all top-level roots
-      parsedHtmlDoc.roots.forEach(traverseHtml);
+      parsedHtmlDoc.roots.forEach(traverseHtmlNodesForDiagnostics);
     }
-    // --- end template diagnostics ---
-    // Send all diagnostics (script + template)
+
     connection.sendDiagnostics({ uri, diagnostics });
   });
 
@@ -454,7 +715,6 @@ async function init() {
     const virtualPath = getVirtualFilePath(change.document.uri);
     scriptContents.delete(virtualPath);
     scriptVersions.delete(virtualPath);
-    // tsConfigCache.delete(path.dirname(virtualPath)); // Optionally clear tsconfig cache
     if (activeVirtualFile === virtualPath) {
       activeVirtualFile = null;
     }
@@ -605,66 +865,6 @@ async function init() {
       }
     }
     return null;
-  }
-
-  /**
-   * Wraps the expression from template with context from script and :for scope.
-   * Returns the modified script and the new offset within this modified script.
-   */
-  function prepareTemporaryScriptForExpression(
-    originalScriptContent: string,
-    expression: string,
-    htmlNodeForScope: any, // Pass the HTML AST node to check for :for ancestors
-    htmlDoc: TextDocument, // Full HTML document for parsing :for
-    htmlService: ReturnType<typeof getHTMLLanguageService>,
-  ): {
-    tempScript: string;
-    expressionOffsetInTempScript: number;
-    forVars: { name: string; type: string }[];
-  } {
-    let prefix = originalScriptContent + "\n;(() => {\n";
-    const forVars: { name: string; type: string }[] = [];
-
-    // Simplified :for scope detection: check current node and direct parent
-    // A proper implementation would walk up the AST.
-    let currentNode = htmlNodeForScope;
-    const visitedNodes = new Set(); // To avoid infinite loops with circular parent references if any
-
-    while (currentNode && !visitedNodes.has(currentNode)) {
-      visitedNodes.add(currentNode);
-      if (currentNode.attributes && currentNode.attributes[":for"]) {
-        const forValue = currentNode.attributes[":for"].slice(1, -1);
-        const forMatch = forValue.match(
-          /^(?:\[\s*(\w+)\s*(?:,\s*(\w+)\s*)?\]|(\w+))\s+of\s+(.+)$/,
-        );
-        if (forMatch) {
-          const itemVar = forMatch[1] || forMatch[3];
-          const indexVar = forMatch[2];
-          // Attempt to infer type of itemVar if possible, otherwise 'any'
-          // For simplicity, using 'any' for now.
-          if (itemVar) {
-            prefix += `let ${itemVar}: any;\n`; // Declare loop variable
-            forVars.push({ name: itemVar, type: "any" });
-          }
-          if (indexVar) {
-            prefix += `let ${indexVar}: number;\n`; // Index is usually number
-            forVars.push({ name: indexVar, type: "number" });
-          }
-        }
-      }
-      if (!currentNode.parent) break; // Stop if no parent
-      // To get parent for current node, we'd need to re-parse or navigate carefully.
-      // htmlService.parseHTMLDocument(htmlDoc).findNodeAt(currentNode.start-1) might give parent if lucky.
-      // This part is complex with current html-language-service API for parent traversal.
-      // For robust :for scope, a full AST traversal from root to nodeAtCursor would be better to collect scopes.
-      // This simplified version only checks the immediate node.
-      break; // Simplified: only check current node for :for scope for variables inside its *attributes*
-      // For variables *inside the content* of a :for element, this logic needs to be in getLunasTemplateContext or called differently.
-    }
-
-    const tempScript = prefix + "return (" + expression + ");\n})();\n";
-    const expressionOffsetInTempScript = prefix.length + "return (".length;
-    return { tempScript, expressionOffsetInTempScript, forVars };
   }
 
   connection.onCompletion(
