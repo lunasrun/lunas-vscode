@@ -21,12 +21,26 @@ import {
   textLocationVisualizer,
 } from "./utils/text-location";
 
+// HTML & CSS language services
+import {
+  getLanguageService as getHTMLLanguageService,
+  HTMLDocument,
+} from "vscode-html-languageservice/lib/esm/htmlLanguageService";
+import {
+  getCSSLanguageService,
+  Stylesheet,
+} from "vscode-css-languageservice/lib/esm/cssLanguageService";
+
 async function init() {
   // LSP の接続作成
   const connection = createConnection(ProposedFeatures.all);
   const documents: TextDocuments<TextDocument> = new TextDocuments(
     TextDocument,
   );
+
+  // initialize HTML & CSS services
+  const htmlService = getHTMLLanguageService({});
+  const cssService = getCSSLanguageService({});
 
   const INDENT_SIZE = 2;
   let totalAdditionalPartChars = 0;
@@ -125,6 +139,48 @@ async function init() {
       inputs[name] = type;
     }
     return inputs;
+  }
+
+  // --- Helpers for HTML & CSS block extraction ---
+  function extractHTML(text: string): {
+    html: string;
+    startLine: number;
+    endLine: number;
+  } {
+    const match = text.match(/html:\s*\n([\s\S]*?)(?:\n\s*(script:|style:)|$)/);
+    if (!match) return { html: "", startLine: 0, endLine: 0 };
+    const full = match[1];
+    const startLine = text
+      .substring(0, text.indexOf("html:"))
+      .split("\n").length;
+    const lines = full
+      .split("\n")
+      .map((line) => (line.startsWith("  ") ? line.slice(2) : line));
+    return {
+      html: lines.join("\n"),
+      startLine,
+      endLine: startLine + lines.length - 1,
+    };
+  }
+  function extractStyle(text: string): {
+    css: string;
+    startLine: number;
+    endLine: number;
+  } {
+    const match = text.match(/style:\s*\n([\s\S]*?)(?:\n\s*(script:|html:)|$)/);
+    if (!match) return { css: "", startLine: 0, endLine: 0 };
+    const full = match[1];
+    const startLine = text
+      .substring(0, text.indexOf("style:"))
+      .split("\n").length;
+    const lines = full
+      .split("\n")
+      .map((line) => (line.startsWith("  ") ? line.slice(2) : line));
+    return {
+      css: lines.join("\n"),
+      startLine,
+      endLine: startLine + lines.length - 1,
+    };
   }
 
   function findAndReadTSConfig(startPath: string): ts.ParsedCommandLine {
@@ -430,12 +486,54 @@ async function init() {
     return results;
   });
 
-  // 補完処理
+  // 補完処理 (HTML, CSS, TS)
   connection.onCompletion((params) => {
-    setActiveFileFromUri(params.textDocument.uri);
-    const doc = documents.get(params.textDocument.uri);
+    const uri = params.textDocument.uri;
+    const doc = documents.get(uri);
     if (!doc) return [];
     const text = doc.getText();
+    const pos = params.position;
+
+    // HTML completions
+    const { html, startLine: hStart, endLine: hEnd } = extractHTML(text);
+    if (html && pos.line >= hStart && pos.line <= hEnd) {
+      // Create a proper TextDocument for HTML
+      const htmlTextDoc = TextDocument.create(uri, "html", doc.version, html);
+      const htmlParsedDoc = htmlService.parseHTMLDocument(htmlTextDoc);
+      const comps = htmlService.doComplete(
+        htmlTextDoc,
+        { line: pos.line - hStart, character: pos.character },
+        htmlParsedDoc
+      );
+      return comps.items.map((item) => ({
+        label: item.label,
+        kind: CompletionItemKind.Text,
+        documentation: item.documentation,
+        detail: item.detail,
+      }));
+    }
+
+    // CSS completions
+    const { css, startLine: cStart, endLine: cEnd } = extractStyle(text);
+    if (css && pos.line >= cStart && pos.line <= cEnd) {
+      // Create a proper TextDocument for CSS
+      const cssTextDoc = TextDocument.create(uri, "css", doc.version, css);
+      const cssParsedStylesheet = cssService.parseStylesheet(cssTextDoc);
+      const comps = cssService.doComplete(
+        cssTextDoc,
+        { line: pos.line - cStart, character: pos.character },
+        cssParsedStylesheet
+      );
+      return comps.items.map((item) => ({
+        label: item.label,
+        kind: CompletionItemKind.Text,
+        documentation: item.documentation,
+        detail: item.detail,
+      }));
+    }
+
+    // Fallback to TypeScript completions
+    setActiveFileFromUri(uri);
     const { script, startLine } = extractScript(text);
     if (!script) return [];
     const localPosition = getLocationInBlock(
@@ -443,27 +541,22 @@ async function init() {
       startLine,
       startLine + script.split("\n").length,
       INDENT_SIZE,
-      {
-        type: "line-column",
-        line: params.position.line,
-        column: params.position.character,
-      },
+      { type: "line-column", line: pos.line, column: pos.character },
       totalAdditionalPartChars,
     );
     if (!localPosition) return [];
     const localOffset = localPosition.localPosition.offset;
-    const virtualPath = getVirtualFilePath(params.textDocument.uri);
-    const completions = tsService.getCompletionsAtPosition(
+    const virtualPath = getVirtualFilePath(uri);
+    const tsComps = tsService.getCompletionsAtPosition(
       virtualPath,
       localOffset,
       {},
     );
-    if (!completions) return [];
-    const items: CompletionItem[] = completions.entries.map((entry) => ({
+    if (!tsComps) return [];
+    return tsComps.entries.map((entry) => ({
       label: entry.name,
       kind: CompletionItemKind.Text,
     }));
-    return items;
   });
 
   connection.onCompletionResolve((item) => {

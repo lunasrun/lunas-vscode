@@ -64,6 +64,8 @@
     "lunas": "^0.0.1-beta.8",
     "lunas-formatter": "^0.0.1-beta.4",
     "typescript": "^5.7.3",
+    "vscode-css-languageservice": "^6.3.5",
+    "vscode-html-languageservice": "^5.4.0",
     "vscode-languageclient": "^9.0.1",
     "vscode-languageserver": "^9.0.1",
     "vscode-languageserver-textdocument": "^1.0.12"
