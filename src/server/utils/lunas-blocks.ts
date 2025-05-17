@@ -71,20 +71,27 @@ export function extractStyle(text: string): {
   css: string;
   startLine: number;
   endLine: number;
+  indent: number;
 } {
   const match = text.match(/style:\s*\n([\s\S]*?)(?:\n\s*(script:|html:)|$)/);
-  if (!match) return { css: "", startLine: 0, endLine: 0 };
+  if (!match) return { css: "", startLine: 0, endLine: 0, indent: 0 };
   const full = match[1];
+  const rawLines = full.split("\n");
+  const indentCounts = rawLines
+    .filter((l) => l.trim() !== "")
+    .map((l) => l.match(/^\s*/)![0].length);
+  const minIndent = indentCounts.length > 0 ? Math.min(...indentCounts) : 0;
   const startLine = text
     .substring(0, text.indexOf("style:"))
     .split("\n").length;
-  const lines = full
-    .split("\n")
-    .map((line) => (line.startsWith("  ") ? line.slice(2) : line));
+  const lines = rawLines.map((line) =>
+    line.startsWith(" ".repeat(minIndent)) ? line.slice(minIndent) : line
+  );
   return {
     css: lines.join("\n"),
     startLine,
     endLine: startLine + lines.length - 1,
+    indent: minIndent,
   };
 }
 
