@@ -158,7 +158,19 @@ async function init() {
         textDocumentSync: TextDocumentSyncKind.Incremental,
         completionProvider: {
           resolveProvider: true,
-          triggerCharacters: ["<", "/", " ", ".", '"', "'", "`", "$", "{", ":", "@"], // Added "@" as trigger char
+          triggerCharacters: [
+            "<",
+            "/",
+            " ",
+            ".",
+            '"',
+            "'",
+            "`",
+            "$",
+            "{",
+            ":",
+            "@",
+          ], // Added "@" as trigger char
         },
         hoverProvider: true,
         definitionProvider: true,
@@ -332,6 +344,109 @@ async function init() {
         });
       }
     });
+    // connection.sendDiagnostics({ uri, diagnostics }); // <-- moved to end after template diagnostics
+
+    // --- Template Expression Diagnostics ---
+    const { html, startLine: hStart, indent: htmlIndent } = extractHTML(text);
+    console.log("[LunasTSDiag] HTML Extracted:", {
+      snippet: html.substring(0, 100),
+    });
+    if (html && virtualPath) {
+      console.log("[LunasTSDiag] Entering template diagnostics. virtualPath=", virtualPath);
+      const htmlDoc = TextDocument.create(
+        uri,
+        "html",
+        change.document.version,
+        html,
+      );
+      const parsedHtmlDoc = htmlService.parseHTMLDocument(htmlDoc);
+
+      function traverseHtml(node: any) {
+        console.log("[LunasTSDiag] Traversing node:", {
+          tag: node.tagName || "text",
+          attrs: node.attributes,
+        });
+        if (node.attributes) {
+          for (const attrName in node.attributes) {
+            if (attrName.startsWith(":") || attrName.startsWith("@")) {
+              const raw = node.attributes[attrName]; // e.g. '"[index,player] of players.entries()"'
+              if (!raw) continue;
+              const exprValue = raw.slice(1, -1); // remove surrounding quotes
+              // Compute start of expression in HTML block
+              const nodeText = html.substring(node.start, node.startTagEnd ?? node.end);
+              const attrFull = `${attrName}=${raw}`;
+              const posInNode = nodeText.indexOf(attrFull);
+              if (posInNode === -1) continue;
+              const valueOffset = posInNode + attrName.length + 2; // skip attrName and ="
+              const exprStartOffset = node.start + valueOffset;
+              const exprStartPos = htmlDoc.positionAt(exprStartOffset);
+              // Prepare temporary script
+              const { tempScript, expressionOffsetInTempScript } =
+                prepareTemporaryScriptForExpression(
+                  scriptContents.get(virtualPath)!,
+                  exprValue,
+                  node,
+                  htmlDoc,
+                  htmlService
+                );
+              // Swap script and get TS errors
+              const original = scriptContents.get(virtualPath)!;
+              const originalVer = scriptVersions.get(virtualPath)!;
+              scriptContents.set(virtualPath, tempScript);
+              scriptVersions.set(virtualPath, originalVer + 1);
+              const tsDiagnostics = [
+                ...tsService.getSyntacticDiagnostics(virtualPath),
+                ...tsService.getSemanticDiagnostics(virtualPath)
+              ];
+              // Restore original
+              scriptContents.set(virtualPath, original);
+              scriptVersions.set(virtualPath, originalVer + 2);
+              // Map diagnostics back to HTML
+              tsDiagnostics.forEach((tsDiag) => {
+                if (tsDiag.start === undefined) return;
+                const relStart = tsDiag.start - expressionOffsetInTempScript;
+                const htmlErrorStartInHtml = htmlDoc.offsetAt(exprStartPos) + relStart;
+                const htmlErrorEndInHtml = htmlErrorStartInHtml + (tsDiag.length || 1);
+
+                // Compute line/char in snippet for start
+                const snippetStartPrefix = html.slice(0, htmlErrorStartInHtml);
+                const errorLineInSnippet = snippetStartPrefix.split('\n').length - 1;
+                const charInLine = snippetStartPrefix.split('\n').pop()!.length;
+
+                // Compute line/char in snippet for end
+                const snippetEndPrefix = html.slice(0, htmlErrorEndInHtml);
+                const errorLineInSnippetEnd = snippetEndPrefix.split('\n').length - 1;
+                const charInLineEnd = snippetEndPrefix.split('\n').pop()!.length;
+
+                // Map to original document positions
+                const startPos = Position.create(
+                  hStart + errorLineInSnippet,
+                  htmlIndent + charInLine
+                );
+                const endPos = Position.create(
+                  hStart + errorLineInSnippetEnd,
+                  htmlIndent + charInLineEnd
+                );
+
+                diagnostics.push({
+                  severity: DiagnosticSeverity.Error,
+                  range: { start: startPos, end: endPos },
+                  message: ts.flattenDiagnosticMessageText(tsDiag.messageText, '\n'),
+                  source: 'Lunas Template TS',
+                });
+              });
+            }
+          }
+        }
+        if (node.children) {
+          node.children.forEach(traverseHtml);
+        }
+      }
+      // Start traversal at all top-level roots
+      parsedHtmlDoc.roots.forEach(traverseHtml);
+    }
+    // --- end template diagnostics ---
+    // Send all diagnostics (script + template)
     connection.sendDiagnostics({ uri, diagnostics });
   });
 
