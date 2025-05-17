@@ -629,12 +629,68 @@ async function init() {
         { line: pos.line - cStart, character: pos.character },
         cssParsedStylesheet,
       );
-      return comps.items.map((item) => ({
-        label: item.label,
-        kind: CompletionItemKind.Text,
-        documentation: item.documentation,
-        detail: item.detail,
-      }));
+      return comps.items.map((item) => {
+        if (!item.textEdit) return item;
+
+        let adjustedTextEdit: TextEdit | undefined = undefined;
+
+        // Handle TextEdit (has 'range') and InsertReplaceEdit (has 'insert' and 'replace')
+        if ("range" in item.textEdit) {
+          const origRange = item.textEdit.range;
+          const adjustedRange = {
+            start: {
+              line: origRange.start.line + cStart,
+              character: origRange.start.character + indent,
+            },
+            end: {
+              line: origRange.end.line + cStart,
+              character: origRange.end.character + indent,
+            },
+          };
+          adjustedTextEdit = {
+            range: adjustedRange,
+            newText: item.textEdit.newText,
+          };
+        } else if ("insert" in item.textEdit && "replace" in item.textEdit) {
+          // InsertReplaceEdit: map both insert and replace ranges
+          const origInsert = item.textEdit.insert;
+          const origReplace = item.textEdit.replace;
+          const adjustedInsert = {
+            start: {
+              line: origInsert.start.line + cStart,
+              character: origInsert.start.character + indent,
+            },
+            end: {
+              line: origInsert.end.line + cStart,
+              character: origInsert.end.character + indent,
+            },
+          };
+          const adjustedReplace = {
+            start: {
+              line: origReplace.start.line + cStart,
+              character: origReplace.start.character + indent,
+            },
+            end: {
+              line: origReplace.end.line + cStart,
+              character: origReplace.end.character + indent,
+            },
+          };
+          // Convert InsertReplaceEdit to TextEdit by using the replace range
+          adjustedTextEdit = {
+            range: adjustedReplace,
+            newText: item.textEdit.newText,
+          };
+        }
+
+        return {
+          label: item.label,
+          kind: CompletionItemKind.Text,
+          documentation: item.documentation,
+          detail: item.detail,
+          textEdit: adjustedTextEdit,
+          insertTextFormat: item.insertTextFormat ?? InsertTextFormat.Snippet,
+        };
+      });
     }
 
     // Fallback to TypeScript completions
