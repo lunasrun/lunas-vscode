@@ -6,10 +6,13 @@ import {
   TextDocumentSyncKind,
   CompletionItem,
   CompletionItemKind,
+  InsertTextFormat,
   Diagnostic,
   DiagnosticSeverity,
   Hover,
   Location,
+  TextEdit,
+  Range,
 } from "vscode-languageserver/node";
 import * as fs from "fs";
 import { TextDocument } from "vscode-languageserver-textdocument";
@@ -94,7 +97,10 @@ async function init() {
     return {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Incremental,
-        completionProvider: { resolveProvider: true },
+        completionProvider: {
+          resolveProvider: true,
+          triggerCharacters: ["<", "/", " "],
+        },
         hoverProvider: true,
         definitionProvider: true,
       },
@@ -146,20 +152,43 @@ async function init() {
     html: string;
     startLine: number;
     endLine: number;
+    indent: number;
   } {
-    const match = text.match(/html:\s*\n([\s\S]*?)(?:\n\s*(script:|style:)|$)/);
-    if (!match) return { html: "", startLine: 0, endLine: 0 };
+    const htmlRegex = /html:\s*\n([\s\S]*?)(?:\n\s*(?:script:|style:)|$)/;
+    htmlRegex.lastIndex = 0;
+    const match = htmlRegex.exec(text);
+    if (!match) return { html: "", startLine: 0, endLine: 0, indent: 0 };
     const full = match[1];
-    const startLine = text
-      .substring(0, text.indexOf("html:"))
-      .split("\n").length;
-    const lines = full
-      .split("\n")
-      .map((line) => (line.startsWith("  ") ? line.slice(2) : line));
+    // Compute startLine from regex match index for precise block position
+    const htmlKeywordIndex = match.index ?? text.indexOf("html:");
+    const startLine = text.substring(0, htmlKeywordIndex).split("\n").length;
+    const rawLines = full.split("\n");
+    // Calculate minimal indent across non-empty lines
+    const indentCounts = rawLines
+      .filter((l) => l.trim() !== "")
+      .map((l) => l.match(/^\s*/)![0].length);
+    const minIndent = indentCounts.length > 0 ? Math.min(...indentCounts) : 0;
+    console.debug(`[extractHTML] removing uniform indent: ${minIndent}`);
+    const lines = rawLines.map((line) => {
+      // Remove the minimal indent but preserve rest of content
+      const content = line.startsWith(" ".repeat(minIndent))
+        ? line.slice(minIndent)
+        : line;
+      console.debug(`[extractHTML] content: ${JSON.stringify(content)}`);
+      // Sanitize malformed closing tags like "<//div" or "<//div>"
+      const sanitized = content.replace(/<\/\/(\w+)>?/g, "</$1>");
+      if (sanitized !== content) {
+        console.warn(
+          `[extractHTML] sanitized malformed tag: ${JSON.stringify(sanitized)}`,
+        );
+      }
+      return sanitized;
+    });
     return {
       html: lines.join("\n"),
       startLine,
       endLine: startLine + lines.length - 1,
+      indent: minIndent,
     };
   }
   function extractStyle(text: string): {
@@ -418,7 +447,7 @@ async function init() {
       totalAdditionalPartChars,
     );
     if (!localPosition) return null;
-    console.log(textLocationVisualizer(script, localPosition.localPosition));
+    // console.log(textLocationVisualizer(script, localPosition.localPosition));
     // 定義取得時は、以前の補正 localOffset + 1 を適用
     const localOffset = localPosition.localPosition.offset;
     const virtualPath = getVirtualFilePath(params.textDocument.uri);
@@ -495,22 +524,98 @@ async function init() {
     const pos = params.position;
 
     // HTML completions
-    const { html, startLine: hStart, endLine: hEnd } = extractHTML(text);
+    const {
+      html,
+      startLine: hStart,
+      endLine: hEnd,
+      indent,
+    } = extractHTML(text);
     if (html && pos.line >= hStart && pos.line <= hEnd) {
+      // Debug original document position and block info
+      console.debug(
+        `[HTML Completion] Original position: line=${pos.line}, char=${pos.character}`,
+      );
+      console.debug(
+        `[HTML Completion] HTML block lines ${hStart}-${hEnd}, indent=${indent}`,
+      );
+      const relLine = pos.line - hStart;
+      let relChar = pos.character - indent;
+      if (relChar < 0) relChar = 0;
+      console.debug(
+        `[HTML Completion] Relative position: relLine=${relLine}, relChar=${relChar}`,
+      );
+      // Show surrounding context
+      const contextLines = html
+        .split("\n")
+        .slice(Math.max(0, relLine - 2), relLine + 3);
+      console.debug(
+        `[HTML Completion] Context around cursor:\n${contextLines.join("\n")}`,
+      );
       // Create a proper TextDocument for HTML
       const htmlTextDoc = TextDocument.create(uri, "html", doc.version, html);
       const htmlParsedDoc = htmlService.parseHTMLDocument(htmlTextDoc);
       const comps = htmlService.doComplete(
         htmlTextDoc,
-        { line: pos.line - hStart, character: pos.character },
-        htmlParsedDoc
+        { line: relLine, character: relChar },
+        htmlParsedDoc,
       );
-      return comps.items.map((item) => ({
-        label: item.label,
-        kind: CompletionItemKind.Text,
-        documentation: item.documentation,
-        detail: item.detail,
-      }));
+      console.debug(`[HTML Completion] Received ${comps.items.length} items`);
+      console.debug(
+        `[HTML Completion] Raw items: ${JSON.stringify(comps.items, null, 2)}`,
+      );
+      return comps.items.map((item) => {
+        console.debug(
+          `[HTML Completion] Mapping item: ${JSON.stringify(item)}`,
+        );
+        // The HTML service gives ranges relative to the HTML fragment.
+        // We need to shift them back to the full document.
+        const edit = item.textEdit!;
+        let adjustedTextEdit: TextEdit | undefined = undefined;
+        if ("range" in edit) {
+          // TextEdit
+          const origRange = edit.range;
+          const adjustedRange: Range = Range.create(
+            origRange.start.line + hStart,
+            origRange.start.character + indent,
+            origRange.end.line + hStart,
+            origRange.end.character + indent,
+          );
+          adjustedTextEdit = {
+            range: adjustedRange,
+            newText: edit.newText,
+          };
+        } else if ("insert" in edit && "replace" in edit) {
+          // InsertReplaceEdit: map both insert and replace ranges
+          const origInsert = edit.insert;
+          const origReplace = edit.replace;
+          const adjustedInsert: Range = Range.create(
+            origInsert.start.line + hStart,
+            origInsert.start.character + indent,
+            origInsert.end.line + hStart,
+            origInsert.end.character + indent,
+          );
+          const adjustedReplace: Range = Range.create(
+            origReplace.start.line + hStart,
+            origReplace.start.character + indent,
+            origReplace.end.line + hStart,
+            origReplace.end.character + indent,
+          );
+          // Convert InsertReplaceEdit to TextEdit by using the replace range
+          adjustedTextEdit = {
+            range: adjustedReplace,
+            newText: edit.newText,
+          };
+        }
+        const completion: CompletionItem = {
+          label: item.label,
+          kind: CompletionItemKind.Text,
+          documentation: item.documentation,
+          detail: item.detail,
+          textEdit: adjustedTextEdit,
+          insertTextFormat: item.insertTextFormat ?? InsertTextFormat.PlainText,
+        };
+        return completion;
+      });
     }
 
     // CSS completions
@@ -522,7 +627,7 @@ async function init() {
       const comps = cssService.doComplete(
         cssTextDoc,
         { line: pos.line - cStart, character: pos.character },
-        cssParsedStylesheet
+        cssParsedStylesheet,
       );
       return comps.items.map((item) => ({
         label: item.label,
