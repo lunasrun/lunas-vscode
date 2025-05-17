@@ -19,6 +19,7 @@ async function main() {
     external: ["vscode", "prettier"],
     logLevel: "warning",
     plugins: [esbuildProblemMatcherPlugin],
+    pure: ["console.log", "console.debug", "console.info", "console.warn", "console.error"],
   });
 
   if (watch) {
