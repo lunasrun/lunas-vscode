@@ -158,7 +158,7 @@ async function init() {
         textDocumentSync: TextDocumentSyncKind.Incremental,
         completionProvider: {
           resolveProvider: true,
-          triggerCharacters: ["<", "/", " ", ".", '"', "'", "`", "$", "{", ":"], // Added trigger chars
+          triggerCharacters: ["<", "/", " ", ".", '"', "'", "`", "$", "{", ":", "@"], // Added "@" as trigger char
         },
         hoverProvider: true,
         definitionProvider: true,
@@ -397,7 +397,7 @@ async function init() {
     // 2. Check for attribute bindings: :attr="expression", ::attr="expression", :if="expression", :for="loop"
     if (nodeAtCursor && nodeAtCursor.attributes) {
       for (const attrName in nodeAtCursor.attributes) {
-        if (attrName.startsWith(":")) {
+        if (attrName.startsWith(":") || attrName.startsWith("@")) {
           const attrValueWithQuotes = nodeAtCursor.attributes[attrName];
           if (attrValueWithQuotes === null || attrValueWithQuotes === undefined)
             continue;
