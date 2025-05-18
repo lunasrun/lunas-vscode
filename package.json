@@ -25,7 +25,24 @@
         "editor.defaultFormatter": "lunasdev.lunas"
       }
     },
-    "commands": [],
+    "commands": [
+      {
+        "command": "lunas.toggleComment",
+        "title": "Lunas: Toggle Comment"
+      }
+    ],
+    "keybindings": [
+      {
+        "key": "ctrl+/",
+        "command": "lunas.toggleComment",
+        "when": "editorTextFocus && resourceExtname == '.lun'"
+      },
+      {
+        "key": "cmd+/",
+        "command": "lunas.toggleComment",
+        "when": "editorTextFocus && resourceExtname == '.lun'"
+      }
+    ],
     "languages": [
       {
         "id": "lunas",
