@@ -321,6 +321,7 @@ async function init() {
     while (currentHtmlNode && !visitedNodes.has(currentHtmlNode)) {
       visitedNodes.add(currentHtmlNode);
       const forAttributeValue = currentHtmlNode.attributes?.[":for"];
+      // Inject manual : any variable declarations for every :for, including the one being analyzed
       if (forAttributeValue) {
         const parsedFor = parseForExpression(forAttributeValue.slice(1, -1)); // remove quotes
         if (parsedFor) {
@@ -367,13 +368,22 @@ async function init() {
       }
     }
 
-    // Ensure expression to analyze is the one from `expressionWithinAttributeValue` if provided
-    const finalExpressionToAnalyze =
-      expressionWithinAttributeValue || expression;
+    const expressionToUse = expressionWithinAttributeValue || expression;
+    let tempScript: string;
+    let expressionOffsetInTempScript: number;
 
-    const tempScript =
-      prefix + "return (" + finalExpressionToAnalyze + ");\n})();\n";
-    const expressionOffsetInTempScript = prefix.length + "return (".length;
+    if (attributeName === ":for") {
+      // Use the wrapped for-loop snippet for :for attributes
+      tempScript = prefix + scriptToAnalyze + "\n})();\n";
+      // Compute offset at the start of the iterable in the loop snippet
+      const parsedFor = parseForExpression(expressionToUse);
+      const iterable = parsedFor ? parsedFor.iterable : expressionToUse;
+      const iterableIndex = scriptToAnalyze.indexOf(iterable);
+      expressionOffsetInTempScript = prefix.length + (iterableIndex >= 0 ? iterableIndex : 0);
+    } else {
+      tempScript = prefix + "return (" + expressionToUse + ");\n})();\n";
+      expressionOffsetInTempScript = prefix.length + "return (".length;
+    }
 
     return { tempScript, expressionOffsetInTempScript, forVars };
   }
@@ -539,7 +549,7 @@ async function init() {
               const templateTsDiagnostics = [
                 ...tsService.getSyntacticDiagnostics(virtualPath),
                 ...tsService.getSemanticDiagnostics(virtualPath),
-              ];
+              ].filter(diag => diag.code !== 1182);
 
               scriptContents.set(virtualPath, originalScriptContent);
               scriptVersions.set(virtualPath, originalVersion + 2);
@@ -641,9 +651,9 @@ async function init() {
             scriptVersions.set(virtualPath, originalVersion + 1);
 
             const templateTsDiagnostics = [
-              ...tsService.getSyntacticDiagnostics(virtualPath),
-              ...tsService.getSemanticDiagnostics(virtualPath),
-            ];
+            ...tsService.getSyntacticDiagnostics(virtualPath),
+            ...tsService.getSemanticDiagnostics(virtualPath),
+          ].filter(diag => diag.code !== 1182);
             scriptContents.set(virtualPath, originalScriptContent);
             scriptVersions.set(virtualPath, originalVersion + 2);
 
@@ -801,52 +811,35 @@ async function init() {
             offsetInHtmlBlock >= expressionStartInHtmlBlockOffset &&
             offsetInHtmlBlock <= expressionEndInHtmlBlockOffset
           ) {
-            let forScope:
-              | { itemVar: string; indexVar?: string; collectionExpr: string }
-              | undefined = undefined;
             if (attrName === ":for") {
-              // Basic parsing for ":for=[item, index] of collection" or ":for=item of collection"
-              const forMatch = attrValue.match(
-                /^(?:\[\s*(\w+)\s*(?:,\s*(\w+)\s*)?\]|(\w+))\s+of\s+(.+)$/,
-              );
-              if (forMatch) {
-                const itemVar = forMatch[1] || forMatch[3];
-                const indexVar = forMatch[2];
-                const collectionExpr = forMatch[4];
-                if (itemVar) {
-                  // Check if cursor is on collectionExpr part
-                  const collectionOffsetInAttr =
-                    attrValue.lastIndexOf(collectionExpr);
-                  if (collectionOffsetInAttr !== -1) {
-                    const cursorInAttrValue =
-                      offsetInHtmlBlock - expressionStartInHtmlBlockOffset;
-                    if (cursorInAttrValue >= collectionOffsetInAttr) {
-                      return {
-                        expression: collectionExpr,
-                        offsetInExpression:
-                          cursorInAttrValue - collectionOffsetInAttr,
-                        expressionStartInHtmlBlock: htmlTextDoc.positionAt(
-                          expressionStartInHtmlBlockOffset +
-                            collectionOffsetInAttr,
-                        ),
-                        type: "attribute",
-                        attributeName: attrName,
-                      };
-                    }
-                    // If cursor is on itemVar or indexVar, specific handling might be needed (e.g. no TS completion, or treat as declaration)
-                    // For now, this example focuses on expressions that refer to script variables.
-                  }
-                }
-                // If trying to complete itemVar or indexVar, that's a declaration, not an expression to complete from script.
-                // This part would need more advanced logic for refactoring/renaming, not just completion.
-                // If cursor is on item/index, we might not want TS completions from the main script.
-                const cursorRelativeOffsetInAttr =
-                  offsetInHtmlBlock - expressionStartInHtmlBlockOffset;
-                if (cursorRelativeOffsetInAttr < attrValue.indexOf(" of ")) {
-                  // Cursor is on the variable declaration part
-                  return null; // Don't provide TS completion for the loop variable declaration itself
-                }
+              // Use parseForExpression to extract loop parts, supporting optional "let"/"const"
+              const parsedFor = parseForExpression(attrValue);
+              if (!parsedFor) {
+                // Invalid :for syntax, skip completions here
+                continue;
               }
+              // Determine start of the iterable part within the attribute value
+              const iterable = parsedFor.iterable;
+              const iterableStartInAttr = attrValue.indexOf(iterable);
+              if (iterableStartInAttr === -1) {
+                continue;
+              }
+              // Calculate cursor offset relative to attribute value
+              const cursorOffsetInAttr = offsetInHtmlBlock - expressionStartInHtmlBlockOffset;
+              // If cursor is within the iterable expression, return it for TS completion
+              if (cursorOffsetInAttr >= iterableStartInAttr) {
+                return {
+                  expression: iterable,
+                  offsetInExpression: cursorOffsetInAttr - iterableStartInAttr,
+                  expressionStartInHtmlBlock: htmlTextDoc.positionAt(
+                    expressionStartInHtmlBlockOffset + iterableStartInAttr
+                  ),
+                  type: "attribute",
+                  attributeName: attrName,
+                };
+              }
+              // Cursor is on the loop variable declaration, skip TS completions
+              return null;
             }
             // For other attributes or the collection part of :for
             return {
@@ -858,7 +851,6 @@ async function init() {
               ),
               type: "attribute",
               attributeName: attrName,
-              forScope: forScope, // This would be more complex to populate for expressions *inside* the :for body
             };
           }
         }
@@ -937,24 +929,53 @@ async function init() {
             htmlTextDoc.offsetAt(relPosInHtmlBlock),
           );
 
+          // DEBUG: Log completion context before preparing temp script
+          console.log("DEBUG completion context:", {
+            attributeName: templateContext.attributeName,
+            expression: templateContext.expression,
+            offsetInExpression: templateContext.offsetInExpression
+          });
           const { tempScript, expressionOffsetInTempScript, forVars } =
             prepareTemporaryScriptForExpression(
               originalScriptContent,
               templateContext.expression,
-              nodeAtCursor, // Pass the HTML node for :for scope checking
+              nodeAtCursor,
               htmlTextDoc,
               htmlService,
+              templateContext.attributeName,
+              templateContext.expression
             );
+          // DEBUG: Log tempScript snippet and offsets after preparing temp script
+          console.log("DEBUG tempScript snippet:", tempScript.slice(0, 200));
+          console.log("DEBUG expressionOffsetInTempScript:", expressionOffsetInTempScript);
+          console.log("DEBUG forVars:", forVars);
 
           const originalVersion = scriptVersions.get(virtualPath) || 0;
           scriptContents.set(virtualPath, tempScript);
           scriptVersions.set(virtualPath, originalVersion + 1);
+          // DEBUG: Refresh TS program with updated virtual file
+          console.log("DEBUG: scriptVersions for", virtualPath, "=", scriptVersions.get(virtualPath));
+          const program = tsService.getProgram();
+          console.log("DEBUG: TS Program root files count:", program!.getRootFileNames().length);
+          console.log("DEBUG: TS Program root files sample:", program!.getRootFileNames().slice(0, 10));
 
-          const tsCompletions = tsService.getCompletionsAtPosition(
-            virtualPath,
-            expressionOffsetInTempScript + templateContext.offsetInExpression,
-            {},
-          );
+          // DEBUG: Try-catch with logs for tsService.getCompletionsAtPosition
+          let tsCompletions;
+          try {
+            console.log("DEBUG invoking tsService.getCompletionsAtPosition with:", {
+              file: virtualPath,
+              position: expressionOffsetInTempScript + templateContext.offsetInExpression,
+              options: {}
+            });
+            tsCompletions = tsService.getCompletionsAtPosition(
+              virtualPath,
+              expressionOffsetInTempScript + templateContext.offsetInExpression,
+              {},
+            );
+            console.log("DEBUG tsCompletions result:", tsCompletions?.entries.map(e => e.name));
+          } catch (err) {
+            console.error("ERROR tsService.getCompletionsAtPosition failed:", err);
+          }
 
           // Restore original script
           scriptContents.set(virtualPath, originalScriptContent);
@@ -962,36 +983,10 @@ async function init() {
 
           if (tsCompletions) {
             return tsCompletions.entries.map((entry) => {
-              const exprStartInFullDoc = Position.create(
-                templateContext.expressionStartInHtmlBlock.line + hStart,
-                templateContext.expressionStartInHtmlBlock.character +
-                  htmlIndent,
-              );
-              // Ensure range for replacement is valid and relative to expression start
-              const startOffsetInExpression =
-                templateContext.offsetInExpression - entry.name.length + 1; // Heuristic for what to replace
-              const endOffsetInExpression = templateContext.offsetInExpression;
-
-              // Create range within the expression in the original document
-              const replacementStartPos = doc.positionAt(
-                doc.offsetAt(exprStartInFullDoc) +
-                  Math.max(
-                    0,
-                    templateContext.offsetInExpression - entry.name.length,
-                  ),
-              );
-              const replacementEndPos = doc.positionAt(
-                doc.offsetAt(exprStartInFullDoc) +
-                  templateContext.offsetInExpression,
-              );
-
               return {
                 label: entry.name,
                 kind: mapTsCompletionKind(entry.kind),
-                textEdit: TextEdit.replace(
-                  Range.create(replacementStartPos, replacementEndPos), // This range needs to be precise
-                  entry.name,
-                ),
+                insertText: entry.name,
                 insertTextFormat: InsertTextFormat.PlainText,
                 data: {
                   virtualPath: virtualPath, // For resolve
