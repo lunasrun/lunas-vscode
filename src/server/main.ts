@@ -314,8 +314,20 @@ async function init() {
     let prefix = originalScriptContent + "\n;(() => {\n";
     const forVars: { name: string; type: string }[] = []; // To store variables declared by :for
 
-    // Traverse up the HTML AST to find ancestor :for scopes
-    let currentHtmlNode = htmlNodeForScope;
+    // Track for scopes for ancestor :for loops
+    const forScopes: {
+      keyword?: "let" | "const" | "var";
+      variables: string;
+      isDestructuring: boolean;
+      operator: "of" | "in";
+      iterable: string;
+    }[] = [];
+
+    // Start traversal from the element node itself for interpolations,
+    // but skip the current node for direct :for attribute analysis
+    const currentHtmlNodeStart =
+      attributeName === ":for" ? htmlNodeForScope?.parent : htmlNodeForScope;
+    let currentHtmlNode = currentHtmlNodeStart;
     const visitedNodes = new Set<Node>(); // Prevent infinite loops
 
     while (currentHtmlNode && !visitedNodes.has(currentHtmlNode)) {
@@ -341,30 +353,66 @@ async function init() {
           } else {
             forVars.push({ name: parsedFor.variables, type: "any" });
           }
+          forScopes.push(parsedFor);
         }
       }
       currentHtmlNode = currentHtmlNode.parent;
     }
 
-    let scriptToAnalyze = expression;
+    // Insert debug log after ancestor traversal
+    console.log("DEBUG prefix for TS context:", prefix);
+
+    // If inside an ancestor :for, but not the :for attribute itself, wrap nested loops for inference
+    if (forScopes.length > 0 && attributeName !== ":for") {
+      let snippet = "";
+      forScopes.forEach((scope, idx) => {
+        const loopKeyword = scope.keyword || "let";
+        snippet += `${loopKeyword} __iterable${idx} = ${scope.iterable};
+for (${loopKeyword} ${scope.variables} ${scope.operator} __iterable${idx}) {\n`;
+      });
+      const innerExpr = expressionWithinAttributeValue || expression;
+      snippet += `  return (${innerExpr});\n`;
+      for (let i = 0; i < forScopes.length; i++) {
+        snippet += `}\n`;
+      }
+      const tempScript = prefix + snippet + "})();\n";
+      const exprIdx = snippet.lastIndexOf(innerExpr);
+      const expressionOffsetInTempScript = prefix.length + exprIdx;
+      return { tempScript, expressionOffsetInTempScript, forVars };
+    }
+
     if (attributeName === ":for") {
-      // If analyzing the :for attribute itself, wrap it in a for loop for better type checking
       const parsedFor = parseForExpression(expression);
       if (parsedFor) {
-        // The expression we want to get diagnostics for is often the 'iterable' part.
-        // Or, if cursor is on variables, it's a declaration.
-        // For simplicity, let's assume `expression` is the iterable part if cursor is there.
-        // This needs refinement based on cursor position within the :for value.
         const loopKeyword = parsedFor.keyword || "let";
-        // We create a valid loop to check the iterable part.
-        // The actual variables `parsedFor.variables` will be defined by this loop.
-        scriptToAnalyze = `
-  ${loopKeyword} __iterable_to_check__ = ${parsedFor.iterable};
-  for (${loopKeyword} ${parsedFor.variables} ${parsedFor.operator} __iterable_to_check__) {
-    // Body of the loop, could put the element's content here for full check
-  }
-  return ${parsedFor.iterable}; // Return the iterable for analysis if expression is the iterable
-`;
+        // Construct a for-of loop to let TS infer types of the loop variables
+        const forLoop = `${loopKeyword} __iterable = ${parsedFor.iterable};
+for (${loopKeyword} ${parsedFor.variables} ${parsedFor.operator} __iterable) {
+  ${expressionWithinAttributeValue}
+}
+return ${expressionWithinAttributeValue};`;
+        // Insert debug log for for-of snippet
+        console.log("DEBUG for-of snippet:", forLoop);
+        const tempScript = prefix + forLoop + "\n})();\n";
+        // Compute offset to the start of the expressionWithinAttributeValue in forLoop
+        const iterableIndex = forLoop.lastIndexOf(
+          expressionWithinAttributeValue ?? "",
+        );
+        const expressionOffsetInTempScript = prefix.length + iterableIndex;
+        // Collect variables declared by the loop for later use
+        const forVars: { name: string; type: string }[] = [];
+        if (parsedFor.isDestructuring) {
+          parsedFor.variables
+            .replace(/[\[\]\{\}\s,:]+/g, " ")
+            .trim()
+            .split(" ")
+            .forEach((v) => {
+              if (v) forVars.push({ name: v, type: "any" });
+            });
+        } else {
+          forVars.push({ name: parsedFor.variables, type: "any" });
+        }
+        return { tempScript, expressionOffsetInTempScript, forVars };
       }
     }
 
@@ -372,19 +420,9 @@ async function init() {
     let tempScript: string;
     let expressionOffsetInTempScript: number;
 
-    if (attributeName === ":for") {
-      // Use the wrapped for-loop snippet for :for attributes
-      tempScript = prefix + scriptToAnalyze + "\n})();\n";
-      // Compute offset at the start of the iterable in the loop snippet
-      const parsedFor = parseForExpression(expressionToUse);
-      const iterable = parsedFor ? parsedFor.iterable : expressionToUse;
-      const iterableIndex = scriptToAnalyze.indexOf(iterable);
-      expressionOffsetInTempScript = prefix.length + (iterableIndex >= 0 ? iterableIndex : 0);
-    } else {
-      tempScript = prefix + "return (" + expressionToUse + ");\n})();\n";
-      expressionOffsetInTempScript = prefix.length + "return (".length;
-    }
-
+    // If not handled above (i.e., not :for or :for parse failed), fall back to regular return expression
+    tempScript = prefix + "return (" + expressionToUse + ");\n})();\n";
+    expressionOffsetInTempScript = prefix.length + "return (".length;
     return { tempScript, expressionOffsetInTempScript, forVars };
   }
 
@@ -549,7 +587,7 @@ async function init() {
               const templateTsDiagnostics = [
                 ...tsService.getSyntacticDiagnostics(virtualPath),
                 ...tsService.getSemanticDiagnostics(virtualPath),
-              ].filter(diag => diag.code !== 1182);
+              ].filter((diag) => diag.code !== 1182);
 
               scriptContents.set(virtualPath, originalScriptContent);
               scriptVersions.set(virtualPath, originalVersion + 2);
@@ -651,9 +689,9 @@ async function init() {
             scriptVersions.set(virtualPath, originalVersion + 1);
 
             const templateTsDiagnostics = [
-            ...tsService.getSyntacticDiagnostics(virtualPath),
-            ...tsService.getSemanticDiagnostics(virtualPath),
-          ].filter(diag => diag.code !== 1182);
+              ...tsService.getSyntacticDiagnostics(virtualPath),
+              ...tsService.getSemanticDiagnostics(virtualPath),
+            ].filter((diag) => diag.code !== 1182);
             scriptContents.set(virtualPath, originalScriptContent);
             scriptVersions.set(virtualPath, originalVersion + 2);
 
@@ -790,8 +828,6 @@ async function init() {
           const attrValue = attrValueWithQuotes.slice(1, -1); // Remove quotes
 
           // Calculate the start/end of the attribute value within the HTML block
-          // This is tricky; html-languageservice doesn't directly give offsets for attribute *values*.
-          // We need to find the attribute in the node's text.
           const nodeText = htmlContent.substring(
             nodeAtCursor.start,
             nodeAtCursor.startTagEnd ?? nodeAtCursor.end,
@@ -812,34 +848,71 @@ async function init() {
             offsetInHtmlBlock <= expressionEndInHtmlBlockOffset
           ) {
             if (attrName === ":for") {
-              // Use parseForExpression to extract loop parts, supporting optional "let"/"const"
               const parsedFor = parseForExpression(attrValue);
               if (!parsedFor) {
-                // Invalid :for syntax, skip completions here
                 continue;
               }
-              // Determine start of the iterable part within the attribute value
               const iterable = parsedFor.iterable;
+              // Calculate offsets within the attribute
               const iterableStartInAttr = attrValue.indexOf(iterable);
-              if (iterableStartInAttr === -1) {
-                continue;
-              }
-              // Calculate cursor offset relative to attribute value
-              const cursorOffsetInAttr = offsetInHtmlBlock - expressionStartInHtmlBlockOffset;
-              // If cursor is within the iterable expression, return it for TS completion
+              const cursorOffsetInAttr =
+                offsetInHtmlBlock - expressionStartInHtmlBlockOffset;
+              // Case 1: Cursor in iterable expression
               if (cursorOffsetInAttr >= iterableStartInAttr) {
                 return {
                   expression: iterable,
                   offsetInExpression: cursorOffsetInAttr - iterableStartInAttr,
                   expressionStartInHtmlBlock: htmlTextDoc.positionAt(
-                    expressionStartInHtmlBlockOffset + iterableStartInAttr
+                    expressionStartInHtmlBlockOffset + iterableStartInAttr,
                   ),
                   type: "attribute",
                   attributeName: attrName,
                 };
               }
-              // Cursor is on the loop variable declaration, skip TS completions
-              return null;
+              // Case 2: Cursor in loop variable declaration
+              if (parsedFor.isDestructuring) {
+                // Handle destructured variables individually
+                const destructStart = attrValue.indexOf(parsedFor.variables);
+                const inner = parsedFor.variables.slice(1, -1); // remove [ ]
+                const varsArray = inner.split(",").map((v) => v.trim());
+                for (const varName of varsArray) {
+                  const varOffset = parsedFor.variables.indexOf(varName);
+                  const startInAttr = destructStart + varOffset;
+                  if (
+                    cursorOffsetInAttr >= startInAttr &&
+                    cursorOffsetInAttr < startInAttr + varName.length
+                  ) {
+                    return {
+                      expression: varName,
+                      offsetInExpression: cursorOffsetInAttr - startInAttr,
+                      expressionStartInHtmlBlock: htmlTextDoc.positionAt(
+                        expressionStartInHtmlBlockOffset + startInAttr,
+                      ),
+                      type: "attribute",
+                      attributeName: attrName,
+                    };
+                  }
+                }
+              } else {
+                // Single variable case
+                const varName = parsedFor.variables;
+                const varStart = attrValue.indexOf(varName);
+                if (
+                  cursorOffsetInAttr >= varStart &&
+                  cursorOffsetInAttr < varStart + varName.length
+                ) {
+                  return {
+                    expression: varName,
+                    offsetInExpression: cursorOffsetInAttr - varStart,
+                    expressionStartInHtmlBlock: htmlTextDoc.positionAt(
+                      expressionStartInHtmlBlockOffset + varStart,
+                    ),
+                    type: "attribute",
+                    attributeName: attrName,
+                  };
+                }
+              }
+              continue; // Otherwise, skip TS support
             }
             // For other attributes or the collection part of :for
             return {
@@ -929,12 +1002,6 @@ async function init() {
             htmlTextDoc.offsetAt(relPosInHtmlBlock),
           );
 
-          // DEBUG: Log completion context before preparing temp script
-          console.log("DEBUG completion context:", {
-            attributeName: templateContext.attributeName,
-            expression: templateContext.expression,
-            offsetInExpression: templateContext.offsetInExpression
-          });
           const { tempScript, expressionOffsetInTempScript, forVars } =
             prepareTemporaryScriptForExpression(
               originalScriptContent,
@@ -943,38 +1010,27 @@ async function init() {
               htmlTextDoc,
               htmlService,
               templateContext.attributeName,
-              templateContext.expression
+              templateContext.expression,
             );
-          // DEBUG: Log tempScript snippet and offsets after preparing temp script
-          console.log("DEBUG tempScript snippet:", tempScript.slice(0, 200));
-          console.log("DEBUG expressionOffsetInTempScript:", expressionOffsetInTempScript);
-          console.log("DEBUG forVars:", forVars);
 
           const originalVersion = scriptVersions.get(virtualPath) || 0;
           scriptContents.set(virtualPath, tempScript);
           scriptVersions.set(virtualPath, originalVersion + 1);
-          // DEBUG: Refresh TS program with updated virtual file
-          console.log("DEBUG: scriptVersions for", virtualPath, "=", scriptVersions.get(virtualPath));
           const program = tsService.getProgram();
-          console.log("DEBUG: TS Program root files count:", program!.getRootFileNames().length);
-          console.log("DEBUG: TS Program root files sample:", program!.getRootFileNames().slice(0, 10));
 
           // DEBUG: Try-catch with logs for tsService.getCompletionsAtPosition
           let tsCompletions;
           try {
-            console.log("DEBUG invoking tsService.getCompletionsAtPosition with:", {
-              file: virtualPath,
-              position: expressionOffsetInTempScript + templateContext.offsetInExpression,
-              options: {}
-            });
             tsCompletions = tsService.getCompletionsAtPosition(
               virtualPath,
               expressionOffsetInTempScript + templateContext.offsetInExpression,
               {},
             );
-            console.log("DEBUG tsCompletions result:", tsCompletions?.entries.map(e => e.name));
           } catch (err) {
-            console.error("ERROR tsService.getCompletionsAtPosition failed:", err);
+            console.error(
+              "ERROR tsService.getCompletionsAtPosition failed:",
+              err,
+            );
           }
 
           // Restore original script
