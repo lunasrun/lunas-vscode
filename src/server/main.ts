@@ -333,14 +333,14 @@ async function init() {
     while (currentHtmlNode && !visitedNodes.has(currentHtmlNode)) {
       visitedNodes.add(currentHtmlNode);
       const forAttributeValue = currentHtmlNode.attributes?.[":for"];
-      // Inject manual : any variable declarations for every :for, including the one being analyzed
+      // Inject variable declarations for every :for, including the one being analyzed
       if (forAttributeValue) {
         const parsedFor = parseForExpression(forAttributeValue.slice(1, -1)); // remove quotes
         if (parsedFor) {
           // Declare loop variables in the temporary script for type checking context
           // This is a simplified declaration; actual type inference from iterable is complex.
           const declarationKeyword = parsedFor.keyword || "let"; // Default to 'let'
-          prefix += `  ${declarationKeyword} ${parsedFor.variables}: any;\n`; // Use 'any' for now, TS will infer if possible from the loop below
+          prefix += `  ${declarationKeyword} ${parsedFor.variables};\n`; // Let TS infer types from the loop below
           if (parsedFor.isDestructuring) {
             // Crude way to get individual var names from destructuring string
             parsedFor.variables
@@ -450,61 +450,66 @@ return ${expressionWithinAttributeValue};`;
         (scriptVersions.get(virtualPath) || 0) + 1,
       );
     }
-    const scriptBlockStartLine = startLine + 1;
-    const diagnostics: Diagnostic[] = [];
+    // Align diagnostics to the actual script block start
+    const scriptBlockStartLine = startLine;
+    let diagnostics: Diagnostic[] = [];
 
     // Ensure TS program is up-to-date
     tsService.getProgram();
 
     // Script block diagnostics
-    const syntaxDiagnostics = tsService.getSyntacticDiagnostics(virtualPath);
-    const semanticDiagnostics = tsService.getSemanticDiagnostics(virtualPath);
-    [...syntaxDiagnostics, ...semanticDiagnostics].forEach((tsDiag) => {
-      if (
-        tsDiag.file &&
-        tsDiag.start !== undefined &&
-        tsDiag.file.fileName === virtualPath
-      ) {
-        if (tsDiag.start < totalAdditionalPartChars) return; // Skip errors from injected inputs
-        const diagStartPos = tsDiag.file.getLineAndCharacterOfPosition(
-          tsDiag.start,
-        );
-        const diagEndPos = tsDiag.file.getLineAndCharacterOfPosition(
-          tsDiag.start + (tsDiag.length || 0),
-        );
-        diagnostics.push({
-          severity:
-            tsDiag.category === ts.DiagnosticCategory.Error
-              ? DiagnosticSeverity.Error
-              : tsDiag.category === ts.DiagnosticCategory.Warning
-                ? DiagnosticSeverity.Warning
-                : tsDiag.category === ts.DiagnosticCategory.Suggestion
+    {
+      const syntaxDiagnostics = tsService.getSyntacticDiagnostics(virtualPath);
+      const semanticDiagnostics = tsService.getSemanticDiagnostics(virtualPath);
+      [...syntaxDiagnostics, ...semanticDiagnostics].forEach((tsDiag) => {
+        if (
+          tsDiag.file &&
+          tsDiag.start !== undefined &&
+          tsDiag.file.fileName === virtualPath
+        ) {
+          // Skip diagnostics from injected input declarations
+          if (tsDiag.start < totalAdditionalPartChars) return;
+          const diagStart = tsDiag.file.getLineAndCharacterOfPosition(tsDiag.start);
+          const diagEnd = tsDiag.file.getLineAndCharacterOfPosition(
+            tsDiag.start + (tsDiag.length || 0)
+          );
+          // Calculate original document line for script block
+          const mappedStartLine =
+            diagStart.line - totalAdditionalPartLines + scriptBlockStartLine;
+          const mappedEndLine =
+            diagEnd.line - totalAdditionalPartLines + scriptBlockStartLine;
+          // Only include diagnostics within the script block region
+          if (
+            mappedStartLine >= scriptBlockStartLine &&
+            mappedStartLine <= scriptBlockStartLine + script.split("\n").length - 1
+          ) {
+            diagnostics.push({
+              severity:
+                tsDiag.category === ts.DiagnosticCategory.Error
+                  ? DiagnosticSeverity.Error
+                  : tsDiag.category === ts.DiagnosticCategory.Warning
+                  ? DiagnosticSeverity.Warning
+                  : tsDiag.category === ts.DiagnosticCategory.Suggestion
                   ? DiagnosticSeverity.Hint
                   : DiagnosticSeverity.Information,
-          range: {
-            start: {
-              line:
-                diagStartPos.line -
-                totalAdditionalPartLines +
-                scriptBlockStartLine -
-                1,
-              character: diagStartPos.character + INDENT_SIZE,
-            },
-            end: {
-              line:
-                diagEndPos.line -
-                totalAdditionalPartLines +
-                scriptBlockStartLine -
-                1,
-              character: diagEndPos.character + INDENT_SIZE,
-            },
-          },
-          message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
-          source: "Lunas TS",
-          code: tsDiag.code,
-        });
-      }
-    });
+              range: {
+                start: {
+                  line: mappedStartLine,
+                  character: diagStart.character + INDENT_SIZE,
+                },
+                end: {
+                  line: mappedEndLine,
+                  character: diagEnd.character + INDENT_SIZE,
+                },
+              },
+              message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
+              source: "Lunas TS",
+              code: tsDiag.code,
+            });
+          }
+        }
+      });
+    }
 
     // HTML Template Diagnostics
     const { html, startLine: hStart, indent: htmlIndent } = extractHTML(text);
@@ -516,7 +521,7 @@ return ${expressionWithinAttributeValue};`;
         html,
       );
       const parsedHtmlDoc = htmlService.parseHTMLDocument(htmlDoc);
-      const originalScriptContent = scriptContents.get(virtualPath)!; // Should exist
+      const originalScriptContent = scriptContents.get(virtualPath)!;
 
       function traverseHtmlNodesForDiagnostics(node: Node) {
         if (node.attributes) {
@@ -587,7 +592,7 @@ return ${expressionWithinAttributeValue};`;
               const templateTsDiagnostics = [
                 ...tsService.getSyntacticDiagnostics(virtualPath),
                 ...tsService.getSemanticDiagnostics(virtualPath),
-              ].filter((diag) => diag.code !== 1182);
+              ].filter((diag) => diag.code !== 1182 && diag.code !== 2304);
 
               scriptContents.set(virtualPath, originalScriptContent);
               scriptVersions.set(virtualPath, originalVersion + 2);
@@ -691,7 +696,7 @@ return ${expressionWithinAttributeValue};`;
             const templateTsDiagnostics = [
               ...tsService.getSyntacticDiagnostics(virtualPath),
               ...tsService.getSemanticDiagnostics(virtualPath),
-            ].filter((diag) => diag.code !== 1182);
+            ].filter((diag) => diag.code !== 1182 && diag.code !== 2304);
             scriptContents.set(virtualPath, originalScriptContent);
             scriptVersions.set(virtualPath, originalVersion + 2);
 
@@ -756,6 +761,28 @@ return ${expressionWithinAttributeValue};`;
       parsedHtmlDoc.roots.forEach(traverseHtmlNodesForDiagnostics);
     }
 
+    // Filter out HTML-template diagnostics on non-binding lines
+    diagnostics = diagnostics.filter((d) => {
+      // Only apply to template diagnostics
+      if (d.source !== "Lunas Template TS") return true;
+      const allLines = change.document.getText().split("\n");
+      const lineText = allLines[d.range.start.line] || "";
+      // Keep only lines containing interpolation or binding attributes
+      return /\$\{/.test(lineText) || /:\w+\s*?=/.test(lineText) || /@[\w-]+\s*?=/.test(lineText);
+    });
+    // Remove duplicate "Cannot find name" errors from template diagnostics
+    diagnostics = diagnostics.filter(d => !(d.source === "Lunas Template TS" && d.code === 2304));
+    // Deduplicate diagnostics by position and message
+    {
+      const uniqueMap = new Map<string, Diagnostic>();
+      diagnostics.forEach((d) => {
+        const key = `${d.range.start.line},${d.range.start.character},${d.range.end.line},${d.range.end.character},${d.message}`;
+        if (!uniqueMap.has(key)) {
+          uniqueMap.set(key, d);
+        }
+      });
+      diagnostics = Array.from(uniqueMap.values());
+    }
     connection.sendDiagnostics({ uri, diagnostics });
   });
 
