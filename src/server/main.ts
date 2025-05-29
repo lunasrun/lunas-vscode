@@ -297,7 +297,10 @@ async function init() {
       const varPart = varMatch ? varMatch[1] : afterKeyword;
       // Build list of variable names
       const varNames = varPart.startsWith("[")
-        ? varPart.slice(1, -1).split(",").map((v) => v.trim())
+        ? varPart
+            .slice(1, -1)
+            .split(",")
+            .map((v) => v.trim())
         : [varPart.trim()];
       // 2. Build snippetLines, omitting any interpolation
       const snippetLines = [
@@ -308,12 +311,15 @@ async function init() {
         "})();",
       ];
       const snippet = snippetLines.join("\n");
+      // Compute adjustment so that offsetInExpression maps correctly when no keyword was present
+      const keywordLength = hasKeyword ? 0 : "let ".length;
       // Combine with existing script content
       const tempScript = originalScriptContent + "\n" + snippet + "\n";
       // Map to the start of the header
       const headerStartInSnippet = snippet.indexOf(headerContent);
+      // Add keywordLength so raw expression start aligns
       const expressionOffsetInTempScript =
-        originalScriptContent.length + 1 + headerStartInSnippet;
+        originalScriptContent.length + 1 + headerStartInSnippet + keywordLength;
       return { tempScript, expressionOffsetInTempScript, forVars: [] };
     }
 
@@ -333,7 +339,10 @@ async function init() {
       const varMatch = afterKeyword.match(/^(\[.*?\]|[^\s]+)/);
       const varPart = varMatch ? varMatch[1] : afterKeyword;
       const varNames = varPart.startsWith("[")
-        ? varPart.slice(1, -1).split(",").map((v) => v.trim())
+        ? varPart
+            .slice(1, -1)
+            .split(",")
+            .map((v) => v.trim())
         : [varPart.trim()];
       // Build snippet: for-loop with interpolation expression first, then var references
       const snippetLines = [
@@ -467,6 +476,81 @@ async function init() {
       const parsedHtmlDoc = htmlService.parseHTMLDocument(htmlDoc);
       const originalScriptContent = scriptContents.get(virtualPath)!;
 
+      // Quick pass: catch all ${…} interpolations and report TS diagnostics
+      const interpolationRegex = /\$\{([^}]*)\}/g;
+      let match;
+      while ((match = interpolationRegex.exec(html)) !== null) {
+        const expr = match[1];
+        if (!expr.trim()) continue;
+        // Compute HTML offsets
+        const exprStartInHtml = match.index + 2; // skip ${
+        const exprEndInHtml = exprStartInHtml + expr.length;
+        // Prepare virtual TS snippet (fallback IIFE)
+        const { tempScript, expressionOffsetInTempScript } =
+          prepareTemporaryScriptForExpression(
+            scriptContents.get(virtualPath)!,
+            expr,
+            undefined,
+            htmlDoc,
+            htmlService,
+            undefined,
+            expr,
+          );
+        // Run TS diagnostics on virtual snippet
+        const originalScript = scriptContents.get(virtualPath)!;
+        const originalVer = scriptVersions.get(virtualPath)!;
+        scriptContents.set(virtualPath, tempScript);
+        scriptVersions.set(virtualPath, originalVer + 1);
+        const tsDiags = [
+          ...tsService.getSyntacticDiagnostics(virtualPath),
+          ...tsService.getSemanticDiagnostics(virtualPath),
+        ];
+        // Restore original script
+        scriptContents.set(virtualPath, originalScript);
+        scriptVersions.set(virtualPath, originalVer + 2);
+        // Map TS diagnostics back to HTML
+        tsDiags.forEach((tsDiag) => {
+          if (
+            tsDiag.file?.fileName === virtualPath &&
+            tsDiag.start !== undefined &&
+            tsDiag.start >= expressionOffsetInTempScript &&
+            tsDiag.start + (tsDiag.length ?? 0) <=
+              expressionOffsetInTempScript + expr.length
+          ) {
+            const relStart = tsDiag.start - expressionOffsetInTempScript;
+            const relEnd = relStart + (tsDiag.length ?? 0);
+            const startOffset = exprStartInHtml + relStart;
+            const endOffset = exprStartInHtml + relEnd;
+            const startPos = htmlDoc.positionAt(startOffset);
+            const endPos = htmlDoc.positionAt(endOffset);
+            diagnostics.push({
+              severity:
+                tsDiag.category === ts.DiagnosticCategory.Error
+                  ? DiagnosticSeverity.Error
+                  : tsDiag.category === ts.DiagnosticCategory.Warning
+                    ? DiagnosticSeverity.Warning
+                    : DiagnosticSeverity.Information,
+              range: {
+                start: {
+                  line: hStart + startPos.line,
+                  character: htmlIndent + startPos.character,
+                },
+                end: {
+                  line: hStart + endPos.line,
+                  character: htmlIndent + endPos.character,
+                },
+              },
+              message: ts.flattenDiagnosticMessageText(
+                tsDiag.messageText,
+                "\n",
+              ),
+              source: "Lunas Template TS",
+              code: tsDiag.code,
+            });
+          }
+        });
+      }
+
       function traverseHtmlNodesForDiagnostics(node: Node) {
         console.log(
           "[Lunas Debug] traverseHtmlNodesForDiagnostics for node:",
@@ -474,6 +558,272 @@ async function init() {
           "attrs:",
           node.attributes,
         );
+        // ---- [PATCH] Move text node interpolation branch up here ----
+        // Check interpolations: ${expression}
+        // Check for text nodes (nodeType === 3)
+        // html-languageservice Node does not have nodeType, so check for text node by tag === undefined
+        if (node.tag === undefined) {
+          // Text node
+          console.log(
+            "[Lunas Debug] Checking text node for interpolation:",
+            html.substring(node.start, node.end),
+          );
+          const textContent = html.substring(node.start, node.end);
+          const interpolationRegex = /\$\{([^}]*)\}/g;
+          let match;
+          while ((match = interpolationRegex.exec(textContent)) !== null) {
+            console.log(
+              "[Lunas Debug] Found interpolation match:",
+              match[1],
+              "at textContent indices:",
+              match.index,
+              "-",
+              match.index + match[0].length,
+            );
+            const expression = match[1];
+            if (!expression.trim()) continue;
+
+            const expressionStartInTextNode = match.index + 2;
+            const expressionOffsetInHtmlBlock =
+              node.start + expressionStartInTextNode;
+
+            // Determine if this interpolation is inside a :for block
+            const isInForBlock =
+              node.parent &&
+              node.parent.attributes &&
+              Object.prototype.hasOwnProperty.call(
+                node.parent.attributes,
+                ":for",
+              );
+            // [Lunas Debug] Log interpolation detection
+            console.log("[Lunas Debug] interpolation detected:", {
+              expression,
+              isInForBlock,
+              nodeTag: node.tag,
+            });
+            const forAttrName = isInForBlock ? ":for" : undefined;
+            const { tempScript, expressionOffsetInTempScript } =
+              prepareTemporaryScriptForExpression(
+                originalScriptContent,
+                expression,
+                node.parent,
+                htmlDoc,
+                htmlService,
+                forAttrName,
+                expression,
+              );
+            // [Lunas Debug] Log generated tempScript and offset for interpolation
+            console.log(
+              "[Lunas Debug] Generated tempScript for interpolation:\n",
+              tempScript,
+            );
+            console.log(
+              "[Lunas Debug] expressionOffsetInTempScript (interpolation):",
+              expressionOffsetInTempScript,
+            );
+
+            // If interpolation inside a :for block, map diagnostics directly to the loop-body snippet
+            if (forAttrName === ":for") {
+              // 1. Debug: Log entry into this branch
+              console.log(
+                "[Lunas Debug] Entered :for interpolation diagnostics branch",
+              );
+              console.log("  expressionWithinAttributeValue:", expression);
+              console.log("  tempScript snippet:\n", tempScript);
+              console.log(
+                "  expressionOffsetInTempScript:",
+                expressionOffsetInTempScript,
+              );
+              const originalVersion = scriptVersions.get(virtualPath)!;
+              scriptContents.set(virtualPath, tempScript);
+              scriptVersions.set(virtualPath, originalVersion + 1);
+              const templateTsDiagnostics = [
+                ...tsService.getSyntacticDiagnostics(virtualPath),
+                ...tsService.getSemanticDiagnostics(virtualPath),
+              ];
+              // 2. Debug: Log raw TS diagnostics
+              console.log(
+                "[Lunas Debug] Raw TS diagnostics for interpolation:",
+                templateTsDiagnostics,
+              );
+              scriptContents.set(virtualPath, originalScriptContent);
+              scriptVersions.set(virtualPath, originalVersion + 2);
+
+              const snippetStart = expressionOffsetInTempScript;
+              const rawLength = expression.length;
+              templateTsDiagnostics.forEach((tsDiag) => {
+                // 3. Debug: Log each tsDiag before fileName check
+                console.log("  [Lunas Debug] Inspecting tsDiag:", {
+                  code: tsDiag.code,
+                  message: ts.flattenDiagnosticMessageText(
+                    tsDiag.messageText,
+                    "\n",
+                  ),
+                  start: tsDiag.start,
+                  length: tsDiag.length,
+                });
+                if (
+                  tsDiag.file?.fileName === virtualPath &&
+                  tsDiag.start !== undefined &&
+                  tsDiag.start >= snippetStart &&
+                  tsDiag.start < snippetStart + rawLength
+                ) {
+                  const relStart = tsDiag.start - snippetStart;
+                  const relEnd = relStart + (tsDiag.length || 0);
+
+                  // 4. Debug: Log mapping to HTML range
+                  console.log("  [Lunas Debug] Mapping tsDiag to HTML range:", {
+                    snippetStart,
+                    relStart,
+                    relEnd,
+                    expressionOffsetInHtmlBlock,
+                  });
+
+                  const errorStartOffsetInHtml =
+                    expressionOffsetInHtmlBlock + relStart;
+                  const errorEndOffsetInHtml =
+                    expressionOffsetInHtmlBlock + relEnd;
+
+                  const startPos = htmlDoc.positionAt(errorStartOffsetInHtml);
+                  const endPos = htmlDoc.positionAt(errorEndOffsetInHtml);
+                  diagnostics.push({
+                    severity:
+                      tsDiag.category === ts.DiagnosticCategory.Error
+                        ? DiagnosticSeverity.Error
+                        : tsDiag.category === ts.DiagnosticCategory.Warning
+                          ? DiagnosticSeverity.Warning
+                          : DiagnosticSeverity.Information,
+                    range: {
+                      start: {
+                        line: hStart + startPos.line,
+                        character: htmlIndent + startPos.character,
+                      },
+                      end: {
+                        line: hStart + endPos.line,
+                        character: htmlIndent + endPos.character,
+                      },
+                    },
+                    message: ts.flattenDiagnosticMessageText(
+                      tsDiag.messageText,
+                      "\n",
+                    ),
+                    source: "Lunas Template TS",
+                    code: tsDiag.code,
+                  });
+                }
+              });
+              continue; // Skip default IIFE mapping
+            }
+            // Fallback mapping for non-for interpolations
+            // 1. Insert debug logs before setting scriptContents
+            console.log(
+              "[Lunas Debug] Entered fallback interpolation diagnostics branch",
+            );
+            console.log("  expression:", expression);
+            console.log("  tempScript snippet:\n", tempScript);
+            console.log(
+              "  expressionOffsetInTempScript:",
+              expressionOffsetInTempScript,
+            );
+            const originalVersion = scriptVersions.get(virtualPath)!;
+            scriptContents.set(virtualPath, tempScript);
+            scriptVersions.set(virtualPath, originalVersion + 1);
+
+            const templateTsDiagnostics = [
+              ...tsService.getSyntacticDiagnostics(virtualPath),
+              ...tsService.getSemanticDiagnostics(virtualPath),
+            ];
+            // 2. Debug: Log raw TS diagnostics for fallback interpolation
+            console.log(
+              "[Lunas Debug] Raw TS diagnostics for fallback interpolation:",
+              templateTsDiagnostics.map((d) => ({
+                code: d.code,
+                message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
+                start: d.start,
+              })),
+            );
+            scriptContents.set(virtualPath, originalScriptContent);
+            scriptVersions.set(virtualPath, originalVersion + 2);
+
+            templateTsDiagnostics.forEach((tsDiag) => {
+              if (
+                tsDiag.file &&
+                tsDiag.start !== undefined &&
+                tsDiag.file.fileName === virtualPath
+              ) {
+                // 3. Debug: Log each tsDiag before computing returnStatementStart/End
+                console.log("  [Lunas Debug] Inspecting tsDiag:", {
+                  code: tsDiag.code,
+                  message: ts.flattenDiagnosticMessageText(
+                    tsDiag.messageText,
+                    "\n",
+                  ),
+                  start: tsDiag.start,
+                  length: tsDiag.length,
+                });
+                const returnStatementStart =
+                  tempScript.indexOf("return (") + "return (".length;
+                const returnStatementEnd = tempScript.lastIndexOf(");");
+                console.log(
+                  "  [Lunas Debug] returnStatementStart, returnStatementEnd:",
+                  returnStatementStart,
+                  returnStatementEnd,
+                );
+                if (
+                  tsDiag.start >= returnStatementStart &&
+                  tsDiag.start + (tsDiag.length || 0) <= returnStatementEnd
+                ) {
+                  // 4. Debug: Log mapping to HTML range
+                  console.log("  [Lunas Debug] Mapping tsDiag to HTML range:", {
+                    relStart: tsDiag.start - returnStatementStart,
+                    relEnd:
+                      tsDiag.start +
+                      (tsDiag.length || 0) -
+                      returnStatementStart,
+                    expressionOffsetInHtmlBlock,
+                  });
+                  const relativeErrorStartInExpression =
+                    tsDiag.start - returnStatementStart;
+                  const relativeErrorEndInExpression =
+                    relativeErrorStartInExpression + (tsDiag.length || 0);
+
+                  const errorStartOffsetInHtml =
+                    expressionOffsetInHtmlBlock +
+                    relativeErrorStartInExpression;
+                  const errorEndOffsetInHtml =
+                    expressionOffsetInHtmlBlock + relativeErrorEndInExpression;
+
+                  const diagStartPosInHtml = htmlDoc.positionAt(
+                    errorStartOffsetInHtml,
+                  );
+                  const diagEndPosInHtml =
+                    htmlDoc.positionAt(errorEndOffsetInHtml);
+                  diagnostics.push({
+                    severity: DiagnosticSeverity.Error,
+                    range: {
+                      start: {
+                        line: hStart + diagStartPosInHtml.line,
+                        character: htmlIndent + diagStartPosInHtml.character,
+                      },
+                      end: {
+                        line: hStart + diagEndPosInHtml.line,
+                        character: htmlIndent + diagEndPosInHtml.character,
+                      },
+                    },
+                    message: ts.flattenDiagnosticMessageText(
+                      tsDiag.messageText,
+                      "\n",
+                    ),
+                    source: "Lunas Template TS",
+                    code: tsDiag.code,
+                  });
+                }
+              }
+            });
+          }
+          return;
+        }
+        // ---- [PATCH END] ----
         if (node.attributes) {
           for (const attrName in node.attributes) {
             // Check attributes like :prop, @event, :for, :if
@@ -512,8 +862,14 @@ async function init() {
                     expressionToAnalyze,
                   );
                 // [Lunas Debug] Log virtual TS snippet and offset for :for
-                console.log("[Lunas Debug] Virtual TS snippet for :for:\n", tempScript);
-                console.log("[Lunas Debug] expressionOffsetInTempScript:", expressionOffsetInTempScript);
+                console.log(
+                  "[Lunas Debug] Virtual TS snippet for :for:\n",
+                  tempScript,
+                );
+                console.log(
+                  "[Lunas Debug] expressionOffsetInTempScript:",
+                  expressionOffsetInTempScript,
+                );
                 const originalVersion = scriptVersions.get(virtualPath)!;
                 scriptContents.set(virtualPath, tempScript);
                 scriptVersions.set(virtualPath, originalVersion + 1);
@@ -523,11 +879,14 @@ async function init() {
                 ];
                 console.log(
                   "[Lunas Debug] templateTsDiagnostics:",
-                  templateTsDiagnostics.map(d => ({
+                  templateTsDiagnostics.map((d) => ({
                     code: d.code,
-                    message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
+                    message: ts.flattenDiagnosticMessageText(
+                      d.messageText,
+                      "\n",
+                    ),
                     start: d.start,
-                  }))
+                  })),
                 );
                 scriptContents.set(virtualPath, originalScriptContent);
                 scriptVersions.set(virtualPath, originalVersion + 2);
@@ -581,207 +940,6 @@ async function init() {
             }
           }
         }
-
-        // Check interpolations: ${expression}
-        // Check for text nodes (nodeType === 3)
-        // html-languageservice Node does not have nodeType, so check for text node by tag === undefined
-        if (node.tag === undefined) {
-          // Text node
-          const textContent = html.substring(node.start, node.end);
-          const interpolationRegex = /\$\{([^}]*)\}/g;
-          let match;
-          while ((match = interpolationRegex.exec(textContent)) !== null) {
-            const expression = match[1];
-            if (!expression.trim()) continue;
-
-            const expressionStartInTextNode = match.index + 2;
-            const expressionOffsetInHtmlBlock =
-              node.start + expressionStartInTextNode;
-
-            // Determine if this interpolation is inside a :for block
-            const isInForBlock =
-              node.parent &&
-              node.parent.attributes &&
-              Object.prototype.hasOwnProperty.call(node.parent.attributes, ":for");
-            const forAttrName = isInForBlock ? ":for" : undefined;
-            const { tempScript, expressionOffsetInTempScript } =
-              prepareTemporaryScriptForExpression(
-                originalScriptContent,
-                expression,
-                node.parent,
-                htmlDoc,
-                htmlService,
-                forAttrName,
-                expression,
-              );
-
-            // If interpolation inside a :for block, map diagnostics directly to the loop-body snippet
-            if (forAttrName === ":for") {
-              // 1. Debug: Log entry into this branch
-              console.log("[Lunas Debug] Entered :for interpolation diagnostics branch");
-              console.log("  expressionWithinAttributeValue:", expression);
-              console.log("  tempScript snippet:\n", tempScript);
-              console.log("  expressionOffsetInTempScript:", expressionOffsetInTempScript);
-              const originalVersion = scriptVersions.get(virtualPath)!;
-              scriptContents.set(virtualPath, tempScript);
-              scriptVersions.set(virtualPath, originalVersion + 1);
-              const templateTsDiagnostics = [
-                ...tsService.getSyntacticDiagnostics(virtualPath),
-                ...tsService.getSemanticDiagnostics(virtualPath),
-              ];
-              // 2. Debug: Log raw TS diagnostics
-              console.log("[Lunas Debug] Raw TS diagnostics for interpolation:", templateTsDiagnostics);
-              scriptContents.set(virtualPath, originalScriptContent);
-              scriptVersions.set(virtualPath, originalVersion + 2);
-
-              const snippetStart = expressionOffsetInTempScript;
-              const rawLength = expression.length;
-              templateTsDiagnostics.forEach((tsDiag) => {
-                // 3. Debug: Log each tsDiag before fileName check
-                console.log("  [Lunas Debug] Inspecting tsDiag:", {
-                  code: tsDiag.code,
-                  message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
-                  start: tsDiag.start,
-                  length: tsDiag.length
-                });
-                if (
-                  tsDiag.file?.fileName === virtualPath &&
-                  tsDiag.start !== undefined &&
-                  tsDiag.start >= snippetStart &&
-                  tsDiag.start < snippetStart + rawLength
-                ) {
-                  const relStart = tsDiag.start - snippetStart;
-                  const relEnd = relStart + (tsDiag.length || 0);
-
-                  // 4. Debug: Log mapping to HTML range
-                  console.log("  [Lunas Debug] Mapping tsDiag to HTML range:", {
-                    snippetStart,
-                    relStart,
-                    relEnd,
-                    expressionOffsetInHtmlBlock
-                  });
-
-                  const errorStartOffsetInHtml = expressionOffsetInHtmlBlock + relStart;
-                  const errorEndOffsetInHtml = expressionOffsetInHtmlBlock + relEnd;
-
-                  const startPos = htmlDoc.positionAt(errorStartOffsetInHtml);
-                  const endPos = htmlDoc.positionAt(errorEndOffsetInHtml);
-                  diagnostics.push({
-                    severity:
-                      tsDiag.category === ts.DiagnosticCategory.Error
-                        ? DiagnosticSeverity.Error
-                        : tsDiag.category === ts.DiagnosticCategory.Warning
-                          ? DiagnosticSeverity.Warning
-                          : DiagnosticSeverity.Information,
-                    range: {
-                      start: {
-                        line: hStart + startPos.line,
-                        character: htmlIndent + startPos.character,
-                      },
-                      end: {
-                        line: hStart + endPos.line,
-                        character: htmlIndent + endPos.character,
-                      },
-                    },
-                    message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
-                    source: "Lunas Template TS",
-                    code: tsDiag.code,
-                  });
-                }
-              });
-              continue; // Skip default IIFE mapping
-            }
-            // Fallback mapping for non-for interpolations
-            // 1. Insert debug logs before setting scriptContents
-            console.log("[Lunas Debug] Entered fallback interpolation diagnostics branch");
-            console.log("  expression:", expression);
-            console.log("  tempScript snippet:\n", tempScript);
-            console.log("  expressionOffsetInTempScript:", expressionOffsetInTempScript);
-            const originalVersion = scriptVersions.get(virtualPath)!;
-            scriptContents.set(virtualPath, tempScript);
-            scriptVersions.set(virtualPath, originalVersion + 1);
-
-            const templateTsDiagnostics = [
-              ...tsService.getSyntacticDiagnostics(virtualPath),
-              ...tsService.getSemanticDiagnostics(virtualPath),
-            ];
-            // 2. Debug: Log raw TS diagnostics for fallback interpolation
-            console.log("[Lunas Debug] Raw TS diagnostics for fallback interpolation:", templateTsDiagnostics.map(d => ({
-              code: d.code,
-              message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
-              start: d.start
-            })));
-            scriptContents.set(virtualPath, originalScriptContent);
-            scriptVersions.set(virtualPath, originalVersion + 2);
-
-            templateTsDiagnostics.forEach((tsDiag) => {
-              if (
-                tsDiag.file &&
-                tsDiag.start !== undefined &&
-                tsDiag.file.fileName === virtualPath
-              ) {
-                // 3. Debug: Log each tsDiag before computing returnStatementStart/End
-                console.log("  [Lunas Debug] Inspecting tsDiag:", {
-                  code: tsDiag.code,
-                  message: ts.flattenDiagnosticMessageText(tsDiag.messageText, "\n"),
-                  start: tsDiag.start,
-                  length: tsDiag.length
-                });
-                const returnStatementStart =
-                  tempScript.indexOf("return (") + "return (".length;
-                const returnStatementEnd = tempScript.lastIndexOf(");");
-                console.log("  [Lunas Debug] returnStatementStart, returnStatementEnd:", returnStatementStart, returnStatementEnd);
-                if (
-                  tsDiag.start >= returnStatementStart &&
-                  tsDiag.start + (tsDiag.length || 0) <= returnStatementEnd
-                ) {
-                  // 4. Debug: Log mapping to HTML range
-                  console.log("  [Lunas Debug] Mapping tsDiag to HTML range:", {
-                    relStart: tsDiag.start - returnStatementStart,
-                    relEnd: tsDiag.start + (tsDiag.length || 0) - returnStatementStart,
-                    expressionOffsetInHtmlBlock
-                  });
-                  const relativeErrorStartInExpression =
-                    tsDiag.start - returnStatementStart;
-                  const relativeErrorEndInExpression =
-                    relativeErrorStartInExpression + (tsDiag.length || 0);
-
-                  const errorStartOffsetInHtml =
-                    expressionOffsetInHtmlBlock +
-                    relativeErrorStartInExpression;
-                  const errorEndOffsetInHtml =
-                    expressionOffsetInHtmlBlock + relativeErrorEndInExpression;
-
-                  const diagStartPosInHtml = htmlDoc.positionAt(
-                    errorStartOffsetInHtml,
-                  );
-                  const diagEndPosInHtml =
-                    htmlDoc.positionAt(errorEndOffsetInHtml);
-                  diagnostics.push({
-                    severity: DiagnosticSeverity.Error,
-                    range: {
-                      start: {
-                        line: hStart + diagStartPosInHtml.line,
-                        character: htmlIndent + diagStartPosInHtml.character,
-                      },
-                      end: {
-                        line: hStart + diagEndPosInHtml.line,
-                        character: htmlIndent + diagEndPosInHtml.character,
-                      },
-                    },
-                    message: ts.flattenDiagnosticMessageText(
-                      tsDiag.messageText,
-                      "\n",
-                    ),
-                    source: "Lunas Template TS",
-                    code: tsDiag.code,
-                  });
-                }
-              }
-            });
-          }
-        }
-
         if (node.children) {
           node.children.forEach(traverseHtmlNodesForDiagnostics);
         }
@@ -802,10 +960,6 @@ async function init() {
         /@[\w-]+\s*?=/.test(lineText)
       );
     });
-    // Remove duplicate "Cannot find name" errors from template diagnostics
-    diagnostics = diagnostics.filter(
-      (d) => !(d.source === "Lunas Template TS" && d.code === 2304),
-    );
     // Deduplicate diagnostics by position and message
     {
       const uniqueMap = new Map<string, Diagnostic>();
@@ -1362,43 +1516,55 @@ async function init() {
         const htmlBlockText = htmlTextDoc.getText();
         const htmlIdx = htmlTextDoc.offsetAt(relPosInHtmlBlock);
         const htmlSnippet = [
-          htmlIdx > 5 ? htmlBlockText.slice(htmlIdx - 5, htmlIdx) : htmlBlockText.slice(0, htmlIdx),
+          htmlIdx > 5
+            ? htmlBlockText.slice(htmlIdx - 5, htmlIdx)
+            : htmlBlockText.slice(0, htmlIdx),
           `|${htmlBlockText[htmlIdx]}|`,
           htmlBlockText.slice(htmlIdx + 1, htmlIdx + 6),
         ].join("");
         console.log("[Lunas Debug] HTML hover selection snippet:", htmlSnippet);
 
         let tempScript, expressionOffsetInTempScript, forVars;
-        ({
-          tempScript,
-          expressionOffsetInTempScript,
-          forVars
-        } = prepareTemporaryScriptForExpression(
-          originalScriptContent,
-          templateContext.expression,
-          nodeAtCursor,
-          htmlTextDoc,
-          htmlService,
-          templateContext.attributeName,
-          templateContext.expression,
-        ));
+        ({ tempScript, expressionOffsetInTempScript, forVars } =
+          prepareTemporaryScriptForExpression(
+            originalScriptContent,
+            templateContext.expression,
+            nodeAtCursor,
+            htmlTextDoc,
+            htmlService,
+            templateContext.attributeName,
+            templateContext.expression,
+          ));
 
         let hoverTsOffset: number;
         if (templateContext.attributeName === ":for") {
           // Simple proxy: map directly into the for-header
-          hoverTsOffset = expressionOffsetInTempScript + templateContext.offsetInExpression;
-          console.log("[Lunas Debug] Hover proxy for :for header, hoverTsOffset:", hoverTsOffset);
+          hoverTsOffset =
+            expressionOffsetInTempScript + templateContext.offsetInExpression;
+          console.log(
+            "[Lunas Debug] Hover proxy for :for header, hoverTsOffset:",
+            hoverTsOffset,
+          );
         } else {
-          hoverTsOffset = expressionOffsetInTempScript + templateContext.offsetInExpression;
+          hoverTsOffset =
+            expressionOffsetInTempScript + templateContext.offsetInExpression;
         }
         // Debug: show TS mapping offset and snippet around that position
-        console.log("[Lunas Debug] Hover proxy to virtual TS offset:", hoverTsOffset);
+        console.log(
+          "[Lunas Debug] Hover proxy to virtual TS offset:",
+          hoverTsOffset,
+        );
         const tsSnippetWindow = [
-          hoverTsOffset > 5 ? tempScript.slice(hoverTsOffset - 5, hoverTsOffset) : tempScript.slice(0, hoverTsOffset),
+          hoverTsOffset > 5
+            ? tempScript.slice(hoverTsOffset - 5, hoverTsOffset)
+            : tempScript.slice(0, hoverTsOffset),
           `|${tempScript[hoverTsOffset]}|`,
           tempScript.slice(hoverTsOffset + 1, hoverTsOffset + 6),
         ].join("");
-        console.log("[Lunas Debug] TS hover selection snippet:", tsSnippetWindow);
+        console.log(
+          "[Lunas Debug] TS hover selection snippet:",
+          tsSnippetWindow,
+        );
 
         const originalVersion = scriptVersions.get(virtualPath) || 0;
         scriptContents.set(virtualPath, tempScript);
