@@ -69,7 +69,7 @@ interface Expr {
 
 /**
  * Parse HTML template into a list of nested BlkNode objects:
- * top-level Expr nodes and ForBlk nodes containing their child Exprs.
+ * top-level Expr nodes and ForBlk/IfBlk nodes containing their child Exprs.
  */
 function parseTemplateBlocks(
   htmlDoc: TextDocument,
@@ -98,53 +98,75 @@ function parseTemplateBlocks(
     });
   }
 
-  // 2. Find all :for blocks with their offset ranges
+  // 2. Find all :for and :if blocks with their offset ranges
   const parsed = htmlServiceInstance.parseHTMLDocument(htmlDoc);
   type BlockRange = {
-    block: ForBlk;
+    block: ForBlk | IfBlk;
     startOffset: number;
     endOffset: number;
   };
-  const forBlocks: BlockRange[] = [];
+  const blockRanges: BlockRange[] = [];
 
-  function findFor(node: Node) {
-    if (node.attributes && node.attributes[":for"]) {
-      const raw = node.attributes[":for"]!;
-      const inner = raw.slice(1, -1).trim();
-      const isDeclOmitted = !/^(?:let|const|var)\s+/.test(inner);
-      const cond = isDeclOmitted ? `let ${inner}` : inner;
-      const startOffset = node.start;
-      const endOffset = node.end;
-      const pos = htmlDoc.positionAt(startOffset);
-      const block: ForBlk = {
-        type: "for",
-        forCond: { cond, isDeclOmitted },
-        originalPos: [pos.line, pos.character],
-        children: [],
-      };
-      forBlocks.push({ block, startOffset, endOffset });
+  function findBlocks(node: Node) {
+    if (node.attributes) {
+      if (node.attributes[":for"]) {
+        const raw = node.attributes[":for"]!;
+        const inner = raw.slice(1, -1).trim();
+        const isDeclOmitted = !/^(?:let|const|var)\s+/.test(inner);
+        const cond = isDeclOmitted ? `let ${inner}` : inner;
+        const startOffset = node.start;
+        const endOffset = node.end;
+        const pos = htmlDoc.positionAt(startOffset);
+        const block: ForBlk = {
+          type: "for",
+          forCond: { cond, isDeclOmitted },
+          originalPos: [pos.line, pos.character],
+          children: [],
+        };
+        blockRanges.push({ block, startOffset, endOffset });
+      }
+      if (node.attributes[":if"]) {
+        const rawCond = node.attributes[":if"]!.slice(1, -1).trim();
+        const startOffset = node.start;
+        const endOffset = node.end;
+        const pos = htmlDoc.positionAt(startOffset);
+        const block: IfBlk = {
+          type: "if",
+          cond: rawCond,
+          originalPos: [pos.line, pos.character],
+          children: []
+        };
+        blockRanges.push({ block, startOffset, endOffset });
+      }
     }
     if (node.children) {
-      node.children.forEach(findFor);
+      node.children.forEach(findBlocks);
     }
   }
-  parsed.roots.forEach(findFor);
+  parsed.roots.forEach(findBlocks);
 
   // 3. Assign exprMatches into blocks or top-level
   const topLevelExprs: Expr[] = [];
   exprMatches.forEach(em => {
     // try to assign to innermost containing block
     let assigned = false;
-    forBlocks.forEach(br => {
-      if (em.startOffset >= br.startOffset && em.endOffset <= br.endOffset) {
-        br.block.children.push({
-          type: "expr",
-          originalPos: [em.startOffset, em.endOffset],
-          value: em.value,
-        });
-        assigned = true;
-      }
-    });
+    // Find the innermost block containing the expr
+    // (blockRanges might not be sorted, so we filter and pick the smallest range)
+    const containingBlocks = blockRanges.filter(br =>
+      em.startOffset >= br.startOffset && em.endOffset <= br.endOffset
+    );
+    if (containingBlocks.length > 0) {
+      // Pick the innermost (smallest range)
+      const innermost = containingBlocks.reduce((a, b) =>
+        (a.endOffset - a.startOffset) <= (b.endOffset - b.startOffset) ? a : b
+      );
+      innermost.block.children.push({
+        type: "expr",
+        originalPos: [em.startOffset, em.endOffset],
+        value: em.value,
+      });
+      assigned = true;
+    }
     if (!assigned) {
       topLevelExprs.push({
         type: "expr",
@@ -154,10 +176,16 @@ function parseTemplateBlocks(
     }
   });
 
-  // 4. Build result: top-level exprs then blocks
+  // 4. Build result: merge top-level exprs and all block nodes, then sort by original HTML offset
   const result: BlkNode[] = [];
-  topLevelExprs.forEach(e => result.push(e));
-  forBlocks.forEach(br => result.push(br.block));
+  // merge top-level exprs and all block nodes, then sort by original HTML offset
+  const allBlocksAndExprs: BlkNode[] = [...topLevelExprs, ...blockRanges.map(br => br.block)];
+  allBlocksAndExprs.sort((a, b) => {
+    const aPos = 'originalPos' in a ? a.originalPos[0] : 0;
+    const bPos = 'originalPos' in b ? b.originalPos[0] : 0;
+    return aPos - bPos;
+  });
+  result.push(...allBlocksAndExprs);
   return result;
 }
 
@@ -462,8 +490,8 @@ async function init() {
     const { tempScript: blockScript, mappings: blockMappings } =
       generateVirtualTsFromBlks(blks, originalScriptContent);
     console.log('[Lunas Debug] prepareTemporaryScriptForExpression block-based tempScript:\n', blockScript);
-    // Try to find mapping for the target expression
-    const exprValue = expressionWithinAttributeValue || expression;
+    // Trim expression to match blockMappings values
+    const exprValue = (expressionWithinAttributeValue || expression).trim();
     const blockMap = blockMappings.find(m => m.value === exprValue);
     if (blockMap) {
       return {
@@ -533,6 +561,36 @@ async function init() {
       // Add keywordLength so raw expression start aligns
       const expressionOffsetInTempScript =
         originalScriptContent.length + 1 + headerStartInSnippet + keywordLength;
+      return { tempScript, expressionOffsetInTempScript, forVars: [] };
+    }
+    // Handle :if bindings
+    if (attributeName === ":if" && expressionWithinAttributeValue) {
+      const expr = expressionWithinAttributeValue;
+      const snippetLines = [
+        `if (${expr}) {`,
+        `  // conditional hover context`,
+        `}`
+      ];
+      const snippet = snippetLines.join("\n");
+      const tempScript = originalScriptContent + "\n" + snippet + "\n";
+      // compute offset to start of the condition expression in the snippet
+      const offsetInSnippet = snippet.indexOf(expr);
+      const expressionOffsetInTempScript = originalScriptContent.length + 1 + offsetInSnippet;
+      return { tempScript, expressionOffsetInTempScript, forVars: [] };
+    }
+
+    // 5. Generic attribute binding handler for other directives (e.g., @click, ::bind)
+    if (attributeName && expressionWithinAttributeValue) {
+      const expr = expressionWithinAttributeValue;
+      const snippet = [
+        `(() => {`,
+        `  return (${expr});`,
+        `})();`
+      ].join("\n");
+      const tempScript = originalScriptContent + "\n" + snippet + "\n";
+      // compute offset where the expression starts in the snippet
+      const offsetInSnippet = snippet.indexOf(expr);
+      const expressionOffsetInTempScript = originalScriptContent.length + 1 + offsetInSnippet;
       return { tempScript, expressionOffsetInTempScript, forVars: [] };
     }
     // Remove or comment out the later block for interpolation inside a :for block,
