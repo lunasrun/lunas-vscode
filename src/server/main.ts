@@ -40,7 +40,6 @@ import {
   setActiveFileFromUri,
 } from "./utils/lunas-blocks";
 
-
 // --- Lunas template block parsing definitions ---
 type BlkNode = IfBlk | ForBlk | Expr;
 
@@ -48,6 +47,7 @@ interface IfBlk {
   type: "if";
   cond: string;
   originalPos: [number, number];
+  startOffset: number;
   children: BlkNode[];
 }
 
@@ -58,12 +58,14 @@ interface ForBlk {
     isDeclOmitted: boolean;
   };
   originalPos: [number, number];
+  startOffset: number;
   children: BlkNode[];
 }
 
 interface Expr {
   type: "expr";
   originalPos: [number, number];
+  startOffset: number;
   value: string;
 }
 
@@ -73,7 +75,7 @@ interface Expr {
  */
 function parseTemplateBlocks(
   htmlDoc: TextDocument,
-  htmlServiceInstance: ReturnType<typeof getHTMLLanguageService>
+  htmlServiceInstance: ReturnType<typeof getHTMLLanguageService>,
 ): BlkNode[] {
   const html = htmlDoc.getText();
 
@@ -98,8 +100,38 @@ function parseTemplateBlocks(
     });
   }
 
-  // 2. Find all :for and :if blocks with their offset ranges
+  // 1.a. Collect attribute-binding expressions (e.g. @click="...", :if="...", ::bind="...")
+  // Move parseHTMLDocument here so it's not used before declaration
   const parsed = htmlServiceInstance.parseHTMLDocument(htmlDoc);
+  const attrRegex = /^[:"@]/; // matches attributes starting with ':' or '@'
+  parsed.roots.forEach(function collectAttrExprs(node: Node) {
+    if (node.attributes) {
+      for (const [attrName, raw] of Object.entries(node.attributes)) {
+        if (raw == null) continue;
+        if (
+          (attrName.startsWith(":") || attrName.startsWith("@")) &&
+          attrName !== ":for" &&
+          attrName !== ":if"
+        ) {
+          const expr = raw.slice(1, -1).trim();
+          const valueStartOffset = html.indexOf(raw, node.start) + 1;
+          const valueEndOffset = valueStartOffset + raw.length - 2;
+          const pos = htmlDoc.positionAt(valueStartOffset);
+          exprMatches.push({
+            value: expr,
+            startOffset: valueStartOffset,
+            endOffset: valueEndOffset,
+            originalPos: [pos.line, pos.character],
+          });
+        }
+      }
+    }
+    if (node.children) {
+      node.children.forEach(collectAttrExprs);
+    }
+  });
+
+  // 2. Find all :for and :if blocks with their offset ranges
   type BlockRange = {
     block: ForBlk | IfBlk;
     startOffset: number;
@@ -114,27 +146,29 @@ function parseTemplateBlocks(
         const inner = raw.slice(1, -1).trim();
         const isDeclOmitted = !/^(?:let|const|var)\s+/.test(inner);
         const cond = isDeclOmitted ? `let ${inner}` : inner;
-        const startOffset = node.start;
-        const endOffset = node.end;
+        const startOffset = node.start!;
+        const endOffset = node.end!;
         const pos = htmlDoc.positionAt(startOffset);
         const block: ForBlk = {
           type: "for",
           forCond: { cond, isDeclOmitted },
           originalPos: [pos.line, pos.character],
+          startOffset,
           children: [],
         };
         blockRanges.push({ block, startOffset, endOffset });
       }
       if (node.attributes[":if"]) {
         const rawCond = node.attributes[":if"]!.slice(1, -1).trim();
-        const startOffset = node.start;
-        const endOffset = node.end;
+        const startOffset = node.start!;
+        const endOffset = node.end!;
         const pos = htmlDoc.positionAt(startOffset);
         const block: IfBlk = {
           type: "if",
           cond: rawCond,
           originalPos: [pos.line, pos.character],
-          children: []
+          startOffset,
+          children: [],
         };
         blockRanges.push({ block, startOffset, endOffset });
       }
@@ -145,47 +179,74 @@ function parseTemplateBlocks(
   }
   parsed.roots.forEach(findBlocks);
 
-  // 3. Assign exprMatches into blocks or top-level
-  const topLevelExprs: Expr[] = [];
-  exprMatches.forEach(em => {
-    // try to assign to innermost containing block
-    let assigned = false;
-    // Find the innermost block containing the expr
-    // (blockRanges might not be sorted, so we filter and pick the smallest range)
-    const containingBlocks = blockRanges.filter(br =>
-      em.startOffset >= br.startOffset && em.endOffset <= br.endOffset
-    );
-    if (containingBlocks.length > 0) {
-      // Pick the innermost (smallest range)
-      const innermost = containingBlocks.reduce((a, b) =>
-        (a.endOffset - a.startOffset) <= (b.endOffset - b.startOffset) ? a : b
+  // 3. Build a hierarchical block tree
+  // Establish parent-child links between blocks
+  blockRanges.forEach((br) => {
+    const { block, startOffset, endOffset } = br;
+    // Only consider p as parent if its range strictly contains br's range
+    const parents = blockRanges.filter((p) => {
+      if (p === br) return false;
+      // only consider p as parent if its range strictly contains br's range
+      return p.startOffset < startOffset && p.endOffset > endOffset;
+    });
+    if (parents.length > 0) {
+      // pick the innermost parent
+      const innermost = parents.reduce((a, b) =>
+        a.endOffset - a.startOffset <= b.endOffset - b.startOffset ? a : b,
       );
-      innermost.block.children.push({
-        type: "expr",
-        originalPos: [em.startOffset, em.endOffset],
-        value: em.value,
-      });
-      assigned = true;
-    }
-    if (!assigned) {
-      topLevelExprs.push({
-        type: "expr",
-        originalPos: [em.startOffset, em.endOffset],
-        value: em.value,
-      });
+      innermost.block.children.push(block);
     }
   });
 
-  // 4. Build result: merge top-level exprs and all block nodes, then sort by original HTML offset
-  const result: BlkNode[] = [];
-  // merge top-level exprs and all block nodes, then sort by original HTML offset
-  const allBlocksAndExprs: BlkNode[] = [...topLevelExprs, ...blockRanges.map(br => br.block)];
-  allBlocksAndExprs.sort((a, b) => {
-    const aPos = 'originalPos' in a ? a.originalPos[0] : 0;
-    const bPos = 'originalPos' in b ? b.originalPos[0] : 0;
-    return aPos - bPos;
+  // Collect root-level blocks
+  const rootBlocks: BlkNode[] = blockRanges
+    .filter(
+      (br) =>
+        !blockRanges.some(
+          (p) =>
+            p !== br &&
+            p.startOffset < br.startOffset &&
+            p.endOffset > br.endOffset,
+        ),
+    )
+    .map((br) => br.block);
+
+  // Assign expressions to their innermost block, or to top-level if none
+  const topLevelExprs: Expr[] = [];
+  exprMatches.forEach((em) => {
+    const exprNode: Expr = {
+      type: "expr",
+      originalPos: em.originalPos,
+      startOffset: em.startOffset,
+      value: em.value,
+    };
+    const containing = blockRanges.filter(
+      (br) => em.startOffset >= br.startOffset && em.endOffset <= br.endOffset,
+    );
+    if (containing.length > 0) {
+      const innermost = containing.reduce((a, b) =>
+        a.endOffset - a.startOffset <= b.endOffset - b.startOffset ? a : b,
+      );
+      innermost.block.children.push(exprNode);
+    } else {
+      topLevelExprs.push(exprNode);
+    }
   });
-  result.push(...allBlocksAndExprs);
+
+  // Sort each block's children by original HTML position
+  function sortChildren(nodes: BlkNode[]) {
+    nodes.sort((a, b) => a.startOffset - b.startOffset);
+    nodes.forEach((n) => {
+      if (n.type === "if" || n.type === "for") {
+        sortChildren(n.children);
+      }
+    });
+  }
+  sortChildren(rootBlocks);
+
+  // 4. Build result: merge and sort by original offset to preserve HTML order
+  const result: BlkNode[] = [...topLevelExprs, ...rootBlocks];
+  result.sort((a, b) => a.startOffset - b.startOffset);
   return result;
 }
 
@@ -194,17 +255,37 @@ function parseTemplateBlocks(
  */
 function generateVirtualTsFromBlks(
   blks: BlkNode[],
-  originalScriptContent: string
-): { tempScript: string; mappings: { value: string; originalPos: [number, number]; tsPos: [number, number] }[] } {
+  originalScriptContent: string,
+): {
+  tempScript: string;
+  mappings: {
+    value: string;
+    originalPos: [number, number];
+    tsPos: [number, number];
+  }[];
+} {
   const lines: string[] = [];
-  const mappings: { value: string; originalPos: [number, number]; tsPos: [number, number] }[] = [];
+  const mappings: {
+    value: string;
+    originalPos: [number, number];
+    tsPos: [number, number];
+  }[] = [];
   const prefixOffset = originalScriptContent.length + 1;
   let cursor = prefixOffset;
 
   function emit(nodes: BlkNode[]) {
-    nodes.forEach(n => {
+    nodes.forEach((n) => {
       if (n.type === "if") {
         const header = `if (${n.cond}) {`;
+        // Compute mapping for the condition expression within the header
+        const condStartInHeader = header.indexOf(n.cond);
+        const tsCondStart = cursor + condStartInHeader;
+        const tsCondEnd = tsCondStart + n.cond.length;
+        mappings.push({
+          value: n.cond,
+          originalPos: n.originalPos,
+          tsPos: [tsCondStart, tsCondEnd],
+        });
         lines.push(header);
         cursor += header.length + 1;
         emit(n.children);
@@ -213,6 +294,15 @@ function generateVirtualTsFromBlks(
         cursor += footer.length + 1;
       } else if (n.type === "for") {
         const header = `for (${n.forCond.cond}) {`;
+        // Compute mapping for the for-loop condition expression within the header
+        const condStartInHeader = header.indexOf(n.forCond.cond);
+        const tsCondStart = cursor + condStartInHeader;
+        const tsCondEnd = tsCondStart + n.forCond.cond.length;
+        mappings.push({
+          value: n.forCond.cond,
+          originalPos: n.originalPos,
+          tsPos: [tsCondStart, tsCondEnd],
+        });
         lines.push(header);
         cursor += header.length + 1;
         emit(n.children);
@@ -225,7 +315,11 @@ function generateVirtualTsFromBlks(
         // Compute TS offsets using cursor and position within line
         const tsStart = cursor + line.indexOf(n.value);
         const tsEnd = tsStart + n.value.length;
-        mappings.push({ value: n.value, originalPos: n.originalPos, tsPos: [tsStart, tsEnd] });
+        mappings.push({
+          value: n.value,
+          originalPos: n.originalPos,
+          tsPos: [tsStart, tsEnd],
+        });
         lines.push(line);
         // Advance cursor by line length + newline
         cursor += line.length + 1;
@@ -485,139 +579,32 @@ async function init() {
     expressionOffsetInTempScript: number;
     forVars: { name: string; type: string }[];
   } {
-    // Unified block-based snippet: generate full virtual TS and mappings
+    console.log(
+      "[Lunas Debug] prepareTemporaryScriptForExpression called with expression:",
+      expression,
+    );
     const blks = parseTemplateBlocks(htmlDoc, htmlServiceInstance);
+    console.log("[Lunas Debug] Parsed blocks:", blks);
     const { tempScript: blockScript, mappings: blockMappings } =
       generateVirtualTsFromBlks(blks, originalScriptContent);
-    console.log('[Lunas Debug] prepareTemporaryScriptForExpression block-based tempScript:\n', blockScript);
-    // Trim expression to match blockMappings values
+    console.log("[Lunas Debug] Generated block-based tempScript:", blockScript);
+    console.log("[Lunas Debug] Block mappings:", blockMappings);
     const exprValue = (expressionWithinAttributeValue || expression).trim();
-    const blockMap = blockMappings.find(m => m.value === exprValue);
-    if (blockMap) {
+    const mapping = blockMappings.find((m) => m.value === exprValue);
+    if (mapping) {
       return {
         tempScript: blockScript,
-        expressionOffsetInTempScript: blockMap.tsPos[0],
+        expressionOffsetInTempScript: mapping.tsPos[0],
+        forVars: [],
+      };
+    } else {
+      console.warn("[Lunas Debug] No mapping found for expression:", exprValue);
+      return {
+        tempScript: blockScript,
+        expressionOffsetInTempScript: 0,
         forVars: [],
       };
     }
-    // Handle interpolation inside a :for block first
-    if (
-      attributeName === ":for" &&
-      expressionWithinAttributeValue &&
-      htmlNodeForScope &&
-      htmlNodeForScope.attributes &&
-      htmlNodeForScope.attributes[":for"]
-    ) {
-      // Extract header and loop variables
-      const forAttr = htmlNodeForScope.attributes[":for"].slice(1, -1);
-      const hasKeyword = /^\s*(?:let|const|var)\s+/.test(forAttr);
-      const headerContent = hasKeyword ? forAttr : `let ${forAttr}`;
-      // Build snippet with a single-line return inside the loop
-      const snippetLines = [
-        "(() => {",
-        `  for (${headerContent}) {`,
-        `    return (${expressionWithinAttributeValue});`,
-        "  }",
-        "})();",
-      ];
-      const snippet = snippetLines.join("\n");
-      const tempScript = originalScriptContent + "\n" + snippet + "\n";
-      // Compute offset for the interpolation expression
-      const offsetInSnippet = snippet.indexOf(`return (${expressionWithinAttributeValue});`) + "return (".length;
-      const expressionOffsetInTempScript = originalScriptContent.length + 1 + offsetInSnippet;
-      return { tempScript, expressionOffsetInTempScript, forVars: [] };
-    }
-    if (attributeName === ":for") {
-      // Only detect presence of let/const/var; no parsing beyond variable extraction
-      const hasKeyword = /^\s*(?:let|const|var)\s+/.test(expression);
-      // Build header content: original expression or prefixed with let
-      const headerContent = hasKeyword ? expression : `let ${expression}`;
-      // Extract the variable part (destructuring or single identifier) without parsing 'of'/'in'
-      const afterKeyword = headerContent.replace(/^(?:let|const|var)\s+/, "");
-      const varMatch = afterKeyword.match(/^(\[.*?\]|[^\s]+)/);
-      const varPart = varMatch ? varMatch[1] : afterKeyword;
-      // Build list of variable names
-      const varNames = varPart.startsWith("[")
-        ? varPart
-            .slice(1, -1)
-            .split(",")
-            .map((v) => v.trim())
-        : [varPart.trim()];
-      // 2. Build snippetLines, omitting any interpolation
-      const snippetLines = [
-        "(() => {",
-        `  for (${headerContent}) {`,
-        ...varNames.map((v) => `    ${v};`),
-        "  }",
-        "})();",
-      ];
-      const snippet = snippetLines.join("\n");
-      // Compute adjustment so that offsetInExpression maps correctly when no keyword was present
-      const keywordLength = hasKeyword ? 0 : "let ".length;
-      // Combine with existing script content
-      const tempScript = originalScriptContent + "\n" + snippet + "\n";
-      // Map to the start of the header
-      const headerStartInSnippet = snippet.indexOf(headerContent);
-      // Add keywordLength so raw expression start aligns
-      const expressionOffsetInTempScript =
-        originalScriptContent.length + 1 + headerStartInSnippet + keywordLength;
-      return { tempScript, expressionOffsetInTempScript, forVars: [] };
-    }
-    // Handle :if bindings
-    if (attributeName === ":if" && expressionWithinAttributeValue) {
-      const expr = expressionWithinAttributeValue;
-      const snippetLines = [
-        `if (${expr}) {`,
-        `  // conditional hover context`,
-        `}`
-      ];
-      const snippet = snippetLines.join("\n");
-      const tempScript = originalScriptContent + "\n" + snippet + "\n";
-      // compute offset to start of the condition expression in the snippet
-      const offsetInSnippet = snippet.indexOf(expr);
-      const expressionOffsetInTempScript = originalScriptContent.length + 1 + offsetInSnippet;
-      return { tempScript, expressionOffsetInTempScript, forVars: [] };
-    }
-
-    // 5. Generic attribute binding handler for other directives (e.g., @click, ::bind)
-    if (attributeName && expressionWithinAttributeValue) {
-      const expr = expressionWithinAttributeValue;
-      const snippet = [
-        `(() => {`,
-        `  return (${expr});`,
-        `})();`
-      ].join("\n");
-      const tempScript = originalScriptContent + "\n" + snippet + "\n";
-      // compute offset where the expression starts in the snippet
-      const offsetInSnippet = snippet.indexOf(expr);
-      const expressionOffsetInTempScript = originalScriptContent.length + 1 + offsetInSnippet;
-      return { tempScript, expressionOffsetInTempScript, forVars: [] };
-    }
-    // Remove or comment out the later block for interpolation inside a :for block,
-    // since the above handles it now.
-    /*
-    if (
-      expressionWithinAttributeValue &&
-      htmlNodeForScope &&
-      htmlNodeForScope.attributes &&
-      htmlNodeForScope.attributes[":for"]
-    ) {
-      // ... (removed as now handled above)
-    }
-    */
-
-    // --- Fallback block removed; block-based snippet is always used now. ---
-    // const forVars: { name: string; type: string }[] = [];
-    // const expressionToUse = expressionWithinAttributeValue || expression;
-    // // Build a single-line IIFE including the expression
-    // const snippet = `;(() => { return (${expressionToUse}); })();`;
-    // // Prefix the original script so arr and inputs are in scope
-    // const tempScript = originalScriptContent + "\n" + snippet + "\n";
-    // // Compute the offset to the start of the expression inside return(
-    // const offsetInSnippet = snippet.indexOf(`return (`) + "return (".length;
-    // const expressionOffsetInTempScript = originalScriptContent.length + 1 + offsetInSnippet;
-    // console.log('[Lunas Debug] prepareTemporaryScriptForExpression fallback tempScript:\n', tempScript);
-    // return { tempScript, expressionOffsetInTempScript, forVars };
   }
 
   /**
@@ -630,22 +617,33 @@ async function init() {
     originalScriptContent: string,
   ): {
     tempScript: string;
-    mappings: { expression: string; htmlRange: { start: number; end: number }; tsRange?: { start: number; end: number } }[];
+    mappings: {
+      expression: string;
+      htmlRange: { start: number; end: number };
+      tsRange?: { start: number; end: number };
+    }[];
   } {
-    const rawFor = loopNode.attributes![':for']!;
+    const rawFor = loopNode.attributes![":for"]!;
     const header = rawFor.slice(1, -1).trim();
     const htmlText = htmlDoc.getText();
-    const mappings: { expression: string; htmlRange: { start: number; end: number }; tsRange?: { start: number; end: number } }[] = [];
+    const mappings: {
+      expression: string;
+      htmlRange: { start: number; end: number };
+      tsRange?: { start: number; end: number };
+    }[] = [];
     if (loopNode.children) {
-      loopNode.children.forEach(child => {
+      loopNode.children.forEach((child) => {
         // attribute expressions
         if (child.attributes) {
           for (const attr of Object.entries(child.attributes)) {
-            if (attr[0].startsWith(':')) {
+            if (attr[0].startsWith(":")) {
               const raw = attr[1]!;
               const expr = raw.slice(1, -1);
               const start = htmlText.indexOf(raw, child.start) + 1;
-              mappings.push({ expression: expr, htmlRange: { start, end: start + expr.length } });
+              mappings.push({
+                expression: expr,
+                htmlRange: { start, end: start + expr.length },
+              });
             }
           }
         }
@@ -657,14 +655,18 @@ async function init() {
           while ((m = interp.exec(txt))) {
             const expr = m[1].trim();
             const start = child.start + m.index + 2;
-            mappings.push({ expression: expr, htmlRange: { start, end: start + expr.length } });
+            mappings.push({
+              expression: expr,
+              htmlRange: { start, end: start + expr.length },
+            });
           }
         }
       });
     }
-    const bodyLines = mappings.map(m => `  ${m.expression};`);
+    const bodyLines = mappings.map((m) => `  ${m.expression};`);
     const snippetLines = [`for (${header}) {`, ...bodyLines, `}`];
-    const tempScript = originalScriptContent + "\n" + snippetLines.join("\n") + "\n";
+    const tempScript =
+      originalScriptContent + "\n" + snippetLines.join("\n") + "\n";
     const prefixOffset = originalScriptContent.length + 1;
     let cursor = prefixOffset + snippetLines[0].length + 1;
     mappings.forEach((m, idx) => {
@@ -674,7 +676,10 @@ async function init() {
       m.tsRange = { start, end: start + m.expression.length };
       cursor += line.length + 1;
     });
-    console.log('[Lunas Debug] prepareVirtualScriptForLoop tempScript:\n', tempScript);
+    console.log(
+      "[Lunas Debug] prepareVirtualScriptForLoop tempScript:\n",
+      tempScript,
+    );
     return { tempScript, mappings };
   }
 
@@ -773,10 +778,7 @@ async function init() {
     const { html, startLine: hStart, indent: htmlIndent } = extractHTML(text);
     if (html && virtualPath && scriptContents.has(virtualPath)) {
       // [Lunas Debug] Print the full HTML content extracted
-      console.log(
-        "[Lunas Debug] Full HTML content:\n",
-        html
-      );
+      console.log("[Lunas Debug] Full HTML content:\n", html);
       const htmlDoc = TextDocument.create(
         `${uri}__html_template__`,
         "html",
@@ -789,21 +791,27 @@ async function init() {
       parsedHtmlDoc.roots.forEach((node, idx) => {
         console.log(
           `[Lunas Debug] Root ${idx}: tag=${node.tag}, start=${node.start}, end=${node.end}, ` +
-          `attrs=${JSON.stringify(node.attributes)}, childrenCount=${node.children?.length}`
+            `attrs=${JSON.stringify(node.attributes)}, childrenCount=${node.children?.length}`,
         );
       });
       // [Lunas Debug] About to traverse parsedHtmlDoc.roots
       console.log(
         "[Lunas Debug] About to traverse parsedHtmlDoc.roots, count:",
-        parsedHtmlDoc.roots.length
+        parsedHtmlDoc.roots.length,
       );
       const originalScriptContent = scriptContents.get(virtualPath)!;
 
       // Parse template into nested block nodes
       const blks = parseTemplateBlocks(htmlDoc, htmlService);
       // Generate virtual TS and mappings
-      const { tempScript, mappings } = generateVirtualTsFromBlks(blks, originalScriptContent);
-      console.log('[Lunas Debug] Generated virtual TS from blocks:\n', tempScript);
+      const { tempScript, mappings } = generateVirtualTsFromBlks(
+        blks,
+        originalScriptContent,
+      );
+      console.log(
+        "[Lunas Debug] Generated virtual TS from blocks:\n",
+        tempScript,
+      );
       // Run TS diagnostics on virtual TS
       const originalScript = scriptContents.get(virtualPath)!;
       const originalVer = scriptVersions.get(virtualPath)!;
@@ -813,19 +821,24 @@ async function init() {
         ...tsService.getSyntacticDiagnostics(virtualPath),
         ...tsService.getSemanticDiagnostics(virtualPath),
       ];
-      console.log('[Lunas Debug] Template Virtual diagnostics (allDiags):', allDiags.map(d => ({
-        message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
-        start: d.start,
-        length: d.length,
-      })));
-      console.log('[Lunas Debug] Generated mappings for template:', mappings);
+      console.log(
+        "[Lunas Debug] Template Virtual diagnostics (allDiags):",
+        allDiags.map((d) => ({
+          message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
+          start: d.start,
+          length: d.length,
+        })),
+      );
+      console.log("[Lunas Debug] Generated mappings for template:", mappings);
       // Restore original script
       scriptContents.set(virtualPath, originalScript);
       scriptVersions.set(virtualPath, originalVer + 2);
       // Map and push diagnostics back to HTML
-      allDiags.forEach(d => {
+      allDiags.forEach((d) => {
         if (d.start === undefined || d.length === undefined) return;
-        const m = mappings.find(m => d.start! >= m.tsPos[0] && d.start! < m.tsPos[1]);
+        const m = mappings.find(
+          (m) => d.start! >= m.tsPos[0] && d.start! < m.tsPos[1],
+        );
         if (!m) return;
         const rel = d.start! - m.tsPos[0];
         const htmlStart = m.originalPos[0] + rel;
@@ -833,22 +846,27 @@ async function init() {
         const startPos = htmlDoc.positionAt(htmlStart);
         const endPos = htmlDoc.positionAt(htmlEnd);
         diagnostics.push({
-          severity: d.category === ts.DiagnosticCategory.Error
-            ? DiagnosticSeverity.Error
-            : d.category === ts.DiagnosticCategory.Warning
-              ? DiagnosticSeverity.Warning
-              : DiagnosticSeverity.Information,
+          severity:
+            d.category === ts.DiagnosticCategory.Error
+              ? DiagnosticSeverity.Error
+              : d.category === ts.DiagnosticCategory.Warning
+                ? DiagnosticSeverity.Warning
+                : DiagnosticSeverity.Information,
           range: {
-            start: { line: hStart + startPos.line, character: htmlIndent + startPos.character },
-            end:   { line: hStart + endPos.line,   character: htmlIndent + endPos.character },
+            start: {
+              line: hStart + startPos.line,
+              character: htmlIndent + startPos.character,
+            },
+            end: {
+              line: hStart + endPos.line,
+              character: htmlIndent + endPos.character,
+            },
           },
           message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
           source: "Lunas Template TS",
           code: d.code,
         });
       });
-
-
     }
 
     // Filter out HTML-template diagnostics on non-binding lines
@@ -1107,10 +1125,10 @@ async function init() {
             );
 
           // [Lunas Debug] Print the full virtual TS file content
-          console.log(
-            "[Lunas Debug] Full virtual script content:\n",
-            tempScript,
-          );
+          // console.log(
+          //   "[Lunas Debug] Full virtual script content:\n",
+          //   tempScript,
+          // );
 
           const originalVersion = scriptVersions.get(virtualPath) || 0;
           scriptContents.set(virtualPath, tempScript);
@@ -1411,7 +1429,9 @@ async function init() {
       let scopeNode: Node | undefined;
       if (templateContext) {
         const parsedHtmlDoc = htmlService.parseHTMLDocument(htmlTextDoc);
-        scopeNode = parsedHtmlDoc.findNodeAt(htmlTextDoc.offsetAt(relPosInHtmlBlock));
+        scopeNode = parsedHtmlDoc.findNodeAt(
+          htmlTextDoc.offsetAt(relPosInHtmlBlock),
+        );
         while (
           scopeNode &&
           !(scopeNode.attributes && scopeNode.attributes[":for"])
@@ -1436,7 +1456,9 @@ async function init() {
           templateContext.expression,
         );
         if (!prep) {
-          console.error("[Lunas Debug] prepareTemporaryScriptForExpression returned undefined");
+          console.error(
+            "[Lunas Debug] prepareTemporaryScriptForExpression returned undefined",
+          );
           return null;
         }
         const { tempScript, expressionOffsetInTempScript, forVars } = prep;
@@ -1482,6 +1504,7 @@ async function init() {
           "[Lunas Debug] TS hover selection snippet:",
           tsSnippetWindow,
         );
+        // console.log("[Lunas Debug] fullcode:", tempScript);
 
         const originalVersion = scriptVersions.get(virtualPath) || 0;
         scriptContents.set(virtualPath, tempScript);
@@ -1683,7 +1706,9 @@ async function init() {
         );
 
         if (!prep) {
-          console.error("[Lunas Debug] prepareTemporaryScriptForExpression returned undefined");
+          console.error(
+            "[Lunas Debug] prepareTemporaryScriptForExpression returned undefined",
+          );
           return null;
         }
         const { tempScript, expressionOffsetInTempScript } = prep;
