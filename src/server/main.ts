@@ -90,13 +90,14 @@ function parseTemplateBlocks(
   let match: RegExpExecArray | null;
   while ((match = interpRegex.exec(html))) {
     const raw = match[1].trim();
-    const startOffset = match.index + 2;
-    const endOffset = startOffset + match[1].length;
+    const exprStartOffset = match.index + 2;
+    const exprEndOffset = exprStartOffset + match[1].length;
+    const pos = htmlDoc.positionAt(exprStartOffset);
     exprMatches.push({
       value: raw,
-      startOffset,
-      endOffset,
-      originalPos: [startOffset, endOffset],
+      startOffset: exprStartOffset,
+      endOffset: exprEndOffset,
+      originalPos: [pos.line, pos.character], // row/column of the first expression character
     });
   }
 
@@ -148,7 +149,10 @@ function parseTemplateBlocks(
         const cond = isDeclOmitted ? `let ${inner}` : inner;
         const startOffset = node.start!;
         const endOffset = node.end!;
-        const pos = htmlDoc.positionAt(startOffset);
+        // Compute the start of the condition expression for originalPos
+        const rawFor = node.attributes[":for"]!;
+        const valueStartOffset = html.indexOf(rawFor, node.start!) + 1;
+        const pos = htmlDoc.positionAt(valueStartOffset);
         const block: ForBlk = {
           type: "for",
           forCond: { cond, isDeclOmitted },
@@ -159,13 +163,16 @@ function parseTemplateBlocks(
         blockRanges.push({ block, startOffset, endOffset });
       }
       if (node.attributes[":if"]) {
-        const rawCond = node.attributes[":if"]!.slice(1, -1).trim();
+        // Compute the start of the condition expression for originalPos
+        const rawCond = node.attributes[":if"]!;
+        const valueStartOffset = html.indexOf(rawCond, node.start!) + 1;
+        const pos = htmlDoc.positionAt(valueStartOffset);
+        const cond = rawCond.slice(1, -1).trim();
         const startOffset = node.start!;
         const endOffset = node.end!;
-        const pos = htmlDoc.positionAt(startOffset);
         const block: IfBlk = {
           type: "if",
-          cond: rawCond,
+          cond: cond,
           originalPos: [pos.line, pos.character],
           startOffset,
           children: [],
@@ -311,7 +318,7 @@ function generateVirtualTsFromBlks(
         cursor += footer.length + 1;
       } else if (n.type === "expr") {
         const [startLine, startChar] = n.originalPos;
-        const line = `  ${n.value};`;
+        const line = `  (${n.value});`;
         // Compute TS offsets using cursor and position within line
         const tsStart = cursor + line.indexOf(n.value);
         const tsEnd = tsStart + n.value.length;
@@ -840,11 +847,13 @@ async function init() {
           (m) => d.start! >= m.tsPos[0] && d.start! < m.tsPos[1],
         );
         if (!m) return;
-        const rel = d.start! - m.tsPos[0];
-        const htmlStart = m.originalPos[0] + rel;
-        const htmlEnd = htmlStart + d.length;
-        const startPos = htmlDoc.positionAt(htmlStart);
-        const endPos = htmlDoc.positionAt(htmlEnd);
+        // Use the entire expression range in HTML for the diagnostic
+        const [origLine, origChar] = m.originalPos;
+        const baseOffset = htmlDoc.offsetAt(Position.create(origLine, origChar));
+        const htmlStartOffset = baseOffset;
+        const htmlEndOffset = baseOffset + m.value.length;
+        const startPos = htmlDoc.positionAt(htmlStartOffset);
+        const endPos = htmlDoc.positionAt(htmlEndOffset);
         diagnostics.push({
           severity:
             d.category === ts.DiagnosticCategory.Error
@@ -869,19 +878,7 @@ async function init() {
       });
     }
 
-    // Filter out HTML-template diagnostics on non-binding lines
-    diagnostics = diagnostics.filter((d) => {
-      // Only apply to template diagnostics
-      if (d.source !== "Lunas Template TS") return true;
-      const allLines = change.document.getText().split("\n");
-      const lineText = allLines[d.range.start.line] || "";
-      // Keep only lines containing interpolation or binding attributes
-      return (
-        /\$\{/.test(lineText) ||
-        /:\w+\s*?=/.test(lineText) ||
-        /@[\w-]+\s*?=/.test(lineText)
-      );
-    });
+    // (Removed HTML-template diagnostics filter so that errors inside `${...}` are still reported)
     // Deduplicate diagnostics by position and message
     {
       const uniqueMap = new Map<string, Diagnostic>();
@@ -1318,6 +1315,197 @@ async function init() {
     },
   );
 
+  // --- Provide hover for Lunas template expressions (HTML block) ---
+  function provideLunasTemplateHover(
+    uri: string,
+    position: Position,
+    doc: TextDocument,
+    htmlService: ReturnType<typeof getHTMLLanguageService>,
+    tsService: ts.LanguageService,
+    scriptContents: Map<string, string>,
+    scriptVersions: Map<string, number>
+  ): Hover | null {
+    const text = doc.getText();
+    const {
+      html,
+      startLine: hStart,
+      endLine: hEnd,
+      indent: htmlIndent,
+    } = extractHTML(text);
+    if (!(html && position.line >= hStart && position.line <= hEnd)) {
+      return null;
+    }
+    const htmlTextDoc = TextDocument.create(uri, "html", doc.version, html);
+    const relPosInHtmlBlock = Position.create(
+      position.line - hStart,
+      position.character - htmlIndent,
+    );
+    const templateContext = getLunasTemplateContext(
+      htmlTextDoc,
+      relPosInHtmlBlock,
+      htmlService,
+    );
+
+    // --- Insert logic to compute nearest :for scope node ---
+    let scopeNode: Node | undefined;
+    if (templateContext) {
+      const parsedHtmlDoc = htmlService.parseHTMLDocument(htmlTextDoc);
+      scopeNode = parsedHtmlDoc.findNodeAt(
+        htmlTextDoc.offsetAt(relPosInHtmlBlock),
+      );
+      while (
+        scopeNode &&
+        !(scopeNode.attributes && scopeNode.attributes[":for"])
+      ) {
+        scopeNode = scopeNode.parent!;
+      }
+    }
+    // --- End insertion ---
+
+    // Find the virtual path for the script
+    let currentActiveVirtualFile = activeVirtualFile;
+    if (!currentActiveVirtualFile) {
+      setActiveFileFromUri(uri, (v) => (currentActiveVirtualFile = v));
+      if (!currentActiveVirtualFile) return null;
+      if (!scriptContents.has(currentActiveVirtualFile)) {
+        // Ensure script content is loaded
+        const {
+          script: currentFileScript,
+          startLine: currentFileScriptStartLine,
+        } = extractScript(text);
+        const currentFileInputs = extractInputs(text);
+        const currentFileInputDeclarations =
+          Object.entries(currentFileInputs)
+            .map(([name, type]) => `declare let ${name}: ${type};`)
+            .join("\n") + "\n";
+        const updatedCurrentFileScript = `${currentFileInputDeclarations}${currentFileScript}`;
+        scriptContents.set(currentActiveVirtualFile, updatedCurrentFileScript);
+        scriptVersions.set(
+          currentActiveVirtualFile,
+          (scriptVersions.get(currentActiveVirtualFile) || 0) + 1,
+        );
+        totalAdditionalPartChars = currentFileInputDeclarations.length;
+        totalAdditionalPartLines =
+          currentFileInputDeclarations.split("\n").length - 1;
+      }
+    }
+    const virtualPath = currentActiveVirtualFile;
+
+    if (templateContext && virtualPath) {
+      const originalScriptContent = scriptContents.get(virtualPath);
+      if (!originalScriptContent) return null;
+
+      // Call prepareTemporaryScriptForExpression and guard against undefined
+      const prep = prepareTemporaryScriptForExpression(
+        originalScriptContent,
+        templateContext.expression,
+        scopeNode,
+        htmlTextDoc,
+        htmlService,
+        templateContext.attributeName,
+        templateContext.expression,
+      );
+      if (!prep) {
+        console.error(
+          "[Lunas Debug] prepareTemporaryScriptForExpression returned undefined",
+        );
+        return null;
+      }
+      const { tempScript, expressionOffsetInTempScript, forVars } = prep;
+
+      // Debug: show HTML snippet around cursor
+      const htmlBlockText = htmlTextDoc.getText();
+      const htmlIdx = htmlTextDoc.offsetAt(relPosInHtmlBlock);
+      const htmlSnippet = [
+        htmlIdx > 5
+          ? htmlBlockText.slice(htmlIdx - 5, htmlIdx)
+          : htmlBlockText.slice(0, htmlIdx),
+        `|${htmlBlockText[htmlIdx]}|`,
+        htmlBlockText.slice(htmlIdx + 1, htmlIdx + 6),
+      ].join("");
+      console.log("[Lunas Debug] HTML hover selection snippet:", htmlSnippet);
+
+      let hoverTsOffset: number;
+      if (templateContext.attributeName === ":for") {
+        // Simple proxy: map directly into the for-header
+        hoverTsOffset =
+          expressionOffsetInTempScript + templateContext.offsetInExpression;
+        console.log(
+          "[Lunas Debug] Hover proxy for :for header, hoverTsOffset:",
+          hoverTsOffset,
+        );
+      } else {
+        hoverTsOffset =
+          expressionOffsetInTempScript + templateContext.offsetInExpression;
+      }
+      // Debug: show TS mapping offset and snippet around that position
+      console.log(
+        "[Lunas Debug] Hover proxy to virtual TS offset:",
+        hoverTsOffset,
+      );
+      const tsSnippetWindow = [
+        hoverTsOffset > 5
+          ? tempScript.slice(hoverTsOffset - 5, hoverTsOffset)
+          : tempScript.slice(0, hoverTsOffset),
+        `|${tempScript[hoverTsOffset]}|`,
+        tempScript.slice(hoverTsOffset + 1, hoverTsOffset + 6),
+      ].join("");
+      console.log(
+        "[Lunas Debug] TS hover selection snippet:",
+        tsSnippetWindow,
+      );
+      console.log("[Lunas Debug] fullcode:", tempScript);
+
+      const originalVersion = scriptVersions.get(virtualPath) || 0;
+      scriptContents.set(virtualPath, tempScript);
+      scriptVersions.set(virtualPath, originalVersion + 1);
+
+      const quickInfo = tsService.getQuickInfoAtPosition(
+        virtualPath,
+        hoverTsOffset,
+      );
+
+      // [Lunas Debug] Log quickInfo.textSpan before restoring scriptContents
+      if (quickInfo) {
+        console.log("[Lunas Debug] quickInfo.textSpan:", quickInfo.textSpan);
+      }
+
+      scriptContents.set(virtualPath, originalScriptContent);
+      scriptVersions.set(virtualPath, originalVersion + 2);
+
+      if (quickInfo) {
+        let displayString = ts.displayPartsToString(quickInfo.displayParts);
+        // If hovering in a :for binding, remove the leading 'let ' from the hover label
+        if (templateContext.attributeName === ":for") {
+          displayString = displayString.replace(/^let\s+/, "");
+        }
+        const docString = ts.displayPartsToString(quickInfo.documentation);
+        const contents = `**${displayString}**\n\n${docString}`;
+        // Calculate range in original document for the hover highlight
+        const exprStartInFullDoc = Position.create(
+          templateContext.expressionStartInHtmlBlock.line + hStart,
+          templateContext.expressionStartInHtmlBlock.character + htmlIndent,
+        );
+        const hoverRange = Range.create(
+          doc.positionAt(
+            doc.offsetAt(exprStartInFullDoc) +
+              templateContext.offsetInExpression -
+              (quickInfo.textSpan.length > 0 ? 0 : 0),
+          ), // Adjust start based on what quickInfo refers to
+          doc.positionAt(
+            doc.offsetAt(exprStartInFullDoc) +
+              templateContext.offsetInExpression +
+              quickInfo.textSpan.length,
+          ),
+        );
+        return {
+          contents: { kind: "markdown", value: contents },
+          range: hoverRange,
+        };
+      }
+    }
+    return null;
+  }
   connection.onCompletionResolve((item: CompletionItem): CompletionItem => {
     if (
       item.data &&
@@ -1375,10 +1563,22 @@ async function init() {
     const doc = documents.get(uri);
     if (!doc) return null;
 
+    // Try HTML block hover first
+    const htmlHover = provideLunasTemplateHover(
+      uri,
+      params.position,
+      doc,
+      htmlService,
+      tsService,
+      scriptContents,
+      scriptVersions,
+    );
+    if (htmlHover) return htmlHover;
+
+    // Script Block Hover
     const text = doc.getText();
     const position = params.position;
     let currentActiveVirtualFile = activeVirtualFile;
-
     if (!currentActiveVirtualFile) {
       setActiveFileFromUri(uri, (v) => (currentActiveVirtualFile = v));
       if (!currentActiveVirtualFile) return null;
@@ -1405,159 +1605,6 @@ async function init() {
       }
     }
     const virtualPath = currentActiveVirtualFile;
-
-    // HTML Block Hover
-    const {
-      html,
-      startLine: hStart,
-      endLine: hEnd,
-      indent: htmlIndent,
-    } = extractHTML(text);
-    if (html && position.line >= hStart && position.line <= hEnd) {
-      const htmlTextDoc = TextDocument.create(uri, "html", doc.version, html);
-      const relPosInHtmlBlock = Position.create(
-        position.line - hStart,
-        position.character - htmlIndent,
-      );
-      const templateContext = getLunasTemplateContext(
-        htmlTextDoc,
-        relPosInHtmlBlock,
-        htmlService,
-      );
-
-      // --- Insert logic to compute nearest :for scope node ---
-      let scopeNode: Node | undefined;
-      if (templateContext) {
-        const parsedHtmlDoc = htmlService.parseHTMLDocument(htmlTextDoc);
-        scopeNode = parsedHtmlDoc.findNodeAt(
-          htmlTextDoc.offsetAt(relPosInHtmlBlock),
-        );
-        while (
-          scopeNode &&
-          !(scopeNode.attributes && scopeNode.attributes[":for"])
-        ) {
-          scopeNode = scopeNode.parent!;
-        }
-      }
-      // --- End insertion ---
-
-      if (templateContext && virtualPath) {
-        const originalScriptContent = scriptContents.get(virtualPath);
-        if (!originalScriptContent) return null;
-
-        // Call prepareTemporaryScriptForExpression and guard against undefined
-        const prep = prepareTemporaryScriptForExpression(
-          originalScriptContent,
-          templateContext.expression,
-          scopeNode,
-          htmlTextDoc,
-          htmlService,
-          templateContext.attributeName,
-          templateContext.expression,
-        );
-        if (!prep) {
-          console.error(
-            "[Lunas Debug] prepareTemporaryScriptForExpression returned undefined",
-          );
-          return null;
-        }
-        const { tempScript, expressionOffsetInTempScript, forVars } = prep;
-
-        // Debug: show HTML snippet around cursor
-        const htmlBlockText = htmlTextDoc.getText();
-        const htmlIdx = htmlTextDoc.offsetAt(relPosInHtmlBlock);
-        const htmlSnippet = [
-          htmlIdx > 5
-            ? htmlBlockText.slice(htmlIdx - 5, htmlIdx)
-            : htmlBlockText.slice(0, htmlIdx),
-          `|${htmlBlockText[htmlIdx]}|`,
-          htmlBlockText.slice(htmlIdx + 1, htmlIdx + 6),
-        ].join("");
-        console.log("[Lunas Debug] HTML hover selection snippet:", htmlSnippet);
-
-        let hoverTsOffset: number;
-        if (templateContext.attributeName === ":for") {
-          // Simple proxy: map directly into the for-header
-          hoverTsOffset =
-            expressionOffsetInTempScript + templateContext.offsetInExpression;
-          console.log(
-            "[Lunas Debug] Hover proxy for :for header, hoverTsOffset:",
-            hoverTsOffset,
-          );
-        } else {
-          hoverTsOffset =
-            expressionOffsetInTempScript + templateContext.offsetInExpression;
-        }
-        // Debug: show TS mapping offset and snippet around that position
-        console.log(
-          "[Lunas Debug] Hover proxy to virtual TS offset:",
-          hoverTsOffset,
-        );
-        const tsSnippetWindow = [
-          hoverTsOffset > 5
-            ? tempScript.slice(hoverTsOffset - 5, hoverTsOffset)
-            : tempScript.slice(0, hoverTsOffset),
-          `|${tempScript[hoverTsOffset]}|`,
-          tempScript.slice(hoverTsOffset + 1, hoverTsOffset + 6),
-        ].join("");
-        console.log(
-          "[Lunas Debug] TS hover selection snippet:",
-          tsSnippetWindow,
-        );
-        // console.log("[Lunas Debug] fullcode:", tempScript);
-
-        const originalVersion = scriptVersions.get(virtualPath) || 0;
-        scriptContents.set(virtualPath, tempScript);
-        scriptVersions.set(virtualPath, originalVersion + 1);
-
-        const quickInfo = tsService.getQuickInfoAtPosition(
-          virtualPath,
-          hoverTsOffset,
-        );
-
-        // [Lunas Debug] Log quickInfo.textSpan before restoring scriptContents
-        if (quickInfo) {
-          console.log("[Lunas Debug] quickInfo.textSpan:", quickInfo.textSpan);
-        }
-
-        scriptContents.set(virtualPath, originalScriptContent);
-        scriptVersions.set(virtualPath, originalVersion + 2);
-
-        if (quickInfo) {
-          let displayString = ts.displayPartsToString(quickInfo.displayParts);
-          // If hovering in a :for binding, remove the leading 'let ' from the hover label
-          if (templateContext.attributeName === ":for") {
-            displayString = displayString.replace(/^let\s+/, "");
-          }
-          const docString = ts.displayPartsToString(quickInfo.documentation);
-          const contents = `**${displayString}**\n\n${docString}`;
-          // Calculate range in original document for the hover highlight
-          const exprStartInFullDoc = Position.create(
-            templateContext.expressionStartInHtmlBlock.line + hStart,
-            templateContext.expressionStartInHtmlBlock.character + htmlIndent,
-          );
-          const hoverRange = Range.create(
-            doc.positionAt(
-              doc.offsetAt(exprStartInFullDoc) +
-                templateContext.offsetInExpression -
-                (quickInfo.textSpan.length > 0 ? 0 : 0),
-            ), // Adjust start based on what quickInfo refers to
-            doc.positionAt(
-              doc.offsetAt(exprStartInFullDoc) +
-                templateContext.offsetInExpression +
-                quickInfo.textSpan.length,
-            ),
-          );
-          return {
-            contents: { kind: "markdown", value: contents },
-            range: hoverRange,
-          };
-        }
-      }
-      // Standard HTML hover can be added here if needed, htmlService.doHover(...)
-    }
-
-    // Script Block Hover
     const { script, startLine: scriptDeclLine } = extractScript(text);
     if (script && virtualPath) {
       const scriptContentActualStartLine = scriptDeclLine + 1;
