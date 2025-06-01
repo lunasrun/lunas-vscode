@@ -67,11 +67,13 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
       const doc = editor.document;
-      const lineNum = editor.selection.active.line;
+      const selection = editor.selection;
+      const startLine = selection.start.line;
+      const endLine = selection.end.line;
 
-      // Determine block by scanning upward for section labels
+      // Determine block type by scanning upward from the start line
       let block: "html" | "css" | "js" | null = null;
-      for (let l = lineNum; l >= 0; l--) {
+      for (let l = startLine; l >= 0; l--) {
         const text = doc.lineAt(l).text.trim();
         if (text === "html:") {
           block = "html";
@@ -88,47 +90,53 @@ export function activate(context: vscode.ExtensionContext) {
       }
       console.log(`Detected block: ${block}`);
 
-      // Fallback to default comment toggle
+      // Fallback to default comment toggle if no block is detected
       if (!block) {
         console.log("No block detected, using default comment command.");
         return vscode.commands.executeCommand("editor.action.commentLine");
       }
 
-      const lineText = doc.lineAt(lineNum).text;
-      const range = new vscode.Range(lineNum, 0, lineNum, lineText.length);
-      let newText: string;
-      const indentMatch = lineText.match(/^\s*/);
-      const indent = indentMatch ? indentMatch[0] : "";
-      const content = lineText.trim();
+      // Edit all lines in the selection
+      await editor.edit((editBuilder) => {
+        for (let lineNum = startLine; lineNum <= endLine; lineNum++) {
+          const line = doc.lineAt(lineNum);
+          const lineText = line.text;
+          const range = new vscode.Range(lineNum, 0, lineNum, lineText.length);
+          const indentMatch = lineText.match(/^\s*/);
+          const indent = indentMatch ? indentMatch[0] : "";
+          const content = lineText.trim();
+          let newText: string;
 
-      if (block === "html") {
-        if (content.startsWith("<!--")) {
-          newText = indent + content.replace(/^<!--\s?/, "").replace(/\s?-->$/, "");
-          console.log("Uncommenting HTML line:", lineText);
-        } else {
-          newText = `${indent}<!-- ${content} -->`;
-          console.log("Commenting HTML line:", lineText);
-        }
-      } else if (block === "css") {
-        if (content.startsWith("/*")) {
-          newText = indent + content.replace(/^\/\*\s?/, "").replace(/\s?\*\/$/, "");
-          console.log("Uncommenting CSS line:", lineText);
-        } else {
-          newText = `${indent}/* ${content} */`;
-          console.log("Commenting CSS line:", lineText);
-        }
-      } else {
-        if (content.startsWith("//")) {
-          newText = indent + content.replace(/^\/\/\s?/, "");
-          console.log("Uncommenting JS line:", lineText);
-        } else {
-          newText = `${indent}// ${content}`;
-          console.log("Commenting JS line:", lineText);
-        }
-      }
+          if (block === "html") {
+            if (content.startsWith("<!--")) {
+              newText = indent + content.replace(/^<!--\s?/, "").replace(/\s?-->$/, "");
+              console.log("Uncommenting HTML line:", lineText);
+            } else {
+              newText = `${indent}<!-- ${content} -->`;
+              console.log("Commenting HTML line:", lineText);
+            }
+          } else if (block === "css") {
+            if (content.startsWith("/*")) {
+              newText = indent + content.replace(/^\/\*\s?/, "").replace(/\s?\*\/$/, "");
+              console.log("Uncommenting CSS line:", lineText);
+            } else {
+              newText = `${indent}/* ${content} */`;
+              console.log("Commenting CSS line:", lineText);
+            }
+          } else {
+            if (content.startsWith("//")) {
+              newText = indent + content.replace(/^\/\/\s?/, "");
+              console.log("Uncommenting JS line:", lineText);
+            } else {
+              newText = `${indent}// ${content}`;
+              console.log("Commenting JS line:", lineText);
+            }
+          }
 
-      await editor.edit((edit) => edit.replace(range, newText));
-      console.log("Replaced text:", newText);
+          editBuilder.replace(range, newText);
+        }
+      });
+      console.log("Toggle comment finished for selected lines.");
     }),
   );
   // --------------------------------------------------
