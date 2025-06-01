@@ -89,14 +89,18 @@ function parseTemplateBlocks(
   const interpRegex = /\$\{([^}]+)\}/g;
   let match: RegExpExecArray | null;
   while ((match = interpRegex.exec(html))) {
-    const raw = match[1].trim();
+    // Trim expression and adjust offsets to trimmed region
+    const raw = match[1];
     const exprStartOffset = match.index + 2;
-    const exprEndOffset = exprStartOffset + match[1].length;
-    const pos = htmlDoc.positionAt(exprStartOffset);
+    const rawTrimmed = raw.trim();
+    const leadingSpaces = raw.indexOf(rawTrimmed);
+    const trimmedStartOffset = exprStartOffset + leadingSpaces;
+    const trimmedEndOffset = trimmedStartOffset + rawTrimmed.length;
+    const pos = htmlDoc.positionAt(trimmedStartOffset);
     exprMatches.push({
-      value: raw,
-      startOffset: exprStartOffset,
-      endOffset: exprEndOffset,
+      value: rawTrimmed,
+      startOffset: trimmedStartOffset,
+      endOffset: trimmedEndOffset,
       originalPos: [pos.line, pos.character], // row/column of the first expression character
     });
   }
@@ -114,12 +118,15 @@ function parseTemplateBlocks(
           attrName !== ":for" &&
           attrName !== ":if"
         ) {
-          const expr = raw.slice(1, -1).trim();
-          const valueStartOffset = html.indexOf(raw, node.start) + 1;
-          const valueEndOffset = valueStartOffset + raw.length - 2;
+          const rawExpr = raw.slice(1, -1);
+          const rawTrimmed = rawExpr.trim();
+          const leadingSpaces = rawExpr.indexOf(rawTrimmed);
+          const valueStartOffset =
+            html.indexOf(raw, node.start) + 1 + leadingSpaces;
+          const valueEndOffset = valueStartOffset + rawTrimmed.length;
           const pos = htmlDoc.positionAt(valueStartOffset);
           exprMatches.push({
-            value: expr,
+            value: rawTrimmed,
             startOffset: valueStartOffset,
             endOffset: valueEndOffset,
             originalPos: [pos.line, pos.character],
@@ -185,6 +192,28 @@ function parseTemplateBlocks(
     }
   }
   parsed.roots.forEach(findBlocks);
+
+  // If a node has both :for and :if attributes, nest the IfBlk inside the ForBlk
+  for (let i = blockRanges.length - 1; i >= 0; i--) {
+    const br = blockRanges[i];
+    if (br.block.type === "if") {
+      const matchingForIndex = blockRanges.findIndex(
+        (other) =>
+          other !== br &&
+          other.block.type === "for" &&
+          other.startOffset === br.startOffset &&
+          other.endOffset === br.endOffset,
+      );
+      if (matchingForIndex !== -1) {
+        // Move this IfBlk into the matching ForBlk's children
+        (blockRanges[matchingForIndex].block as ForBlk).children.push(
+          br.block as IfBlk,
+        );
+        // Remove this IfBlk from top-level
+        blockRanges.splice(i, 1);
+      }
+    }
+  }
 
   // 3. Build a hierarchical block tree
   // Establish parent-child links between blocks
@@ -585,6 +614,11 @@ async function init() {
     tempScript: string;
     expressionOffsetInTempScript: number;
     forVars: { name: string; type: string }[];
+    blockMappings: {
+      value: string;
+      originalPos: [number, number];
+      tsPos: [number, number];
+    }[];
   } {
     console.log(
       "[Lunas Debug] prepareTemporaryScriptForExpression called with expression:",
@@ -603,6 +637,7 @@ async function init() {
         tempScript: blockScript,
         expressionOffsetInTempScript: mapping.tsPos[0],
         forVars: [],
+        blockMappings,
       };
     } else {
       console.warn("[Lunas Debug] No mapping found for expression:", exprValue);
@@ -610,6 +645,7 @@ async function init() {
         tempScript: blockScript,
         expressionOffsetInTempScript: 0,
         forVars: [],
+        blockMappings,
       };
     }
   }
@@ -849,7 +885,9 @@ async function init() {
         if (!m) return;
         // Use the entire expression range in HTML for the diagnostic
         const [origLine, origChar] = m.originalPos;
-        const baseOffset = htmlDoc.offsetAt(Position.create(origLine, origChar));
+        const baseOffset = htmlDoc.offsetAt(
+          Position.create(origLine, origChar),
+        );
         const htmlStartOffset = baseOffset;
         const htmlEndOffset = baseOffset + m.value.length;
         const startPos = htmlDoc.positionAt(htmlStartOffset);
@@ -1323,7 +1361,7 @@ async function init() {
     htmlService: ReturnType<typeof getHTMLLanguageService>,
     tsService: ts.LanguageService,
     scriptContents: Map<string, string>,
-    scriptVersions: Map<string, number>
+    scriptVersions: Map<string, number>,
   ): Hover | null {
     const text = doc.getText();
     const {
@@ -1450,10 +1488,7 @@ async function init() {
         `|${tempScript[hoverTsOffset]}|`,
         tempScript.slice(hoverTsOffset + 1, hoverTsOffset + 6),
       ].join("");
-      console.log(
-        "[Lunas Debug] TS hover selection snippet:",
-        tsSnippetWindow,
-      );
+      console.log("[Lunas Debug] TS hover selection snippet:", tsSnippetWindow);
       console.log("[Lunas Debug] fullcode:", tempScript);
 
       const originalVersion = scriptVersions.get(virtualPath) || 0;
@@ -1713,6 +1748,9 @@ async function init() {
     }
     const virtualPath = currentActiveVirtualFile;
 
+    // Debug log at start
+    console.log("[Lunas Debug] onDefinition called with uri and position:", uri, position);
+
     // HTML Block Definition
     const {
       html,
@@ -1720,17 +1758,46 @@ async function init() {
       endLine: hEnd,
       indent: htmlIndent,
     } = extractHTML(text);
+
+    // --- HTML-level `:for` definition handling ---
+    // (block intentionally removed or commented out to skip HTML-level jumps)
+    /*
+    if (html && position.line >= hStart && position.line <= hEnd) {
+      // ... omitted HTML-level jump logic ...
+    }
+    */
+    // --- End HTML-level `:for` definition handling ---
     if (html && position.line >= hStart && position.line <= hEnd) {
       const htmlTextDoc = TextDocument.create(uri, "html", doc.version, html);
       const relPosInHtmlBlock = Position.create(
         position.line - hStart,
         position.character - htmlIndent,
       );
+      // Lunas テンプレート文脈を取得
       const templateContext = getLunasTemplateContext(
         htmlTextDoc,
         relPosInHtmlBlock,
         htmlService,
       );
+      // :for 属性内の変数定義なら、元の HTML 側にジャンプする
+      if (templateContext && templateContext.attributeName === ":for") {
+        const exprStart = templateContext.expressionStartInHtmlBlock;
+        const exprValue = templateContext.expression;
+        // HTML 全体の行番号と文字位置を計算
+        const htmlStartLine = exprStart.line + hStart;
+        const htmlStartChar = exprStart.character + htmlIndent;
+        const startPos = Position.create(htmlStartLine, htmlStartChar);
+        const endPos = Position.create(
+          htmlStartLine,
+          htmlStartChar + exprValue.length,
+        );
+        return [Location.create(uri, Range.create(startPos, endPos))];
+      }
+      // const templateContext = getLunasTemplateContext(
+      //   htmlTextDoc,
+      //   relPosInHtmlBlock,
+      //   htmlService,
+      // );
 
       if (templateContext && virtualPath) {
         const originalScriptContent = scriptContents.get(virtualPath);
@@ -1758,7 +1825,7 @@ async function init() {
           );
           return null;
         }
-        const { tempScript, expressionOffsetInTempScript } = prep;
+        const { tempScript, expressionOffsetInTempScript, blockMappings } = prep;
         const originalVersion = scriptVersions.get(virtualPath) || 0;
         scriptContents.set(virtualPath, tempScript);
         scriptVersions.set(virtualPath, originalVersion + 1);
@@ -1775,9 +1842,10 @@ async function init() {
         scriptVersions.set(virtualPath, originalVersion + 2);
 
         if (definitions) {
+          console.log("[Lunas Debug] TS definitions returned:", definitions);
           const results: Location[] = [];
           const program = tsService.getProgram();
-          if (!program) return null;
+          if (!program) return results;
 
           for (const def of definitions) {
             const defSourceFile = program.getSourceFile(def.fileName);
@@ -1791,15 +1859,49 @@ async function init() {
             );
 
             if (def.fileName === virtualPath) {
-              // Definition is in the same virtual script
-              // Check if the definition is within the input declarations part
+              // Skip input declaration section
               if (def.textSpan.start < totalAdditionalPartChars) {
-                // Definition is of an @Input. Ideally, link to the component tag or input declaration in source.
-                // For now, we skip it or point to the start of the script block.
                 continue;
               }
+              // Find matching blockMapping entry, preferring the loop header mapping first
+              let mapped = blockMappings.find(
+                (m) =>
+                  def.textSpan.start >= m.tsPos[0] &&
+                  def.textSpan.start < m.tsPos[1]
+              );
+              // Enhanced loop header mapping fallback
+              if (mapped && mapped.value.startsWith("let [")) {
+                // Try to more precisely map the variable name in the for-header
+                // Extract variable name from def.name
+                const varName = def.name;
+                const offsetInCond = mapped.value.indexOf(varName);
+                const origLine = mapped.originalPos[0];
+                const origChar = mapped.originalPos[1] + (offsetInCond >= 0 ? offsetInCond : 0);
+                const htmlStart = Position.create(hStart + origLine, htmlIndent + origChar);
+                const htmlEnd = Position.create(
+                  hStart + origLine,
+                  htmlIndent + origChar + varName.length
+                );
+                results.push(
+                  Location.create(uri, Range.create(htmlStart, htmlEnd))
+                );
+                continue;
+              }
+              if (mapped) {
+                const [origLine, origChar] = mapped.originalPos;
+                const htmlStart = Position.create(hStart + origLine, htmlIndent + origChar);
+                const htmlEnd = Position.create(
+                  hStart + origLine,
+                  htmlIndent + origChar + mapped.value.length
+                );
+                results.push(
+                  Location.create(uri, Range.create(htmlStart, htmlEnd))
+                );
+                continue;
+              }
+              // Fallback to script-block mapping
               results.push({
-                uri: uri, // Original document URI
+                uri: uri,
                 range: Range.create(
                   defStart.line -
                     totalAdditionalPartLines +
@@ -1814,7 +1916,6 @@ async function init() {
                 ),
               });
             } else {
-              // Definition is in an external file (.d.ts or other .ts)
               results.push({
                 uri: pathToFileURL(def.fileName).toString(),
                 range: Range.create(defStart, defEnd),
