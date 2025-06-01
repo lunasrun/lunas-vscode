@@ -1749,7 +1749,11 @@ async function init() {
     const virtualPath = currentActiveVirtualFile;
 
     // Debug log at start
-    console.log("[Lunas Debug] onDefinition called with uri and position:", uri, position);
+    console.log(
+      "[Lunas Debug] onDefinition called with uri and position:",
+      uri,
+      position,
+    );
 
     // HTML Block Definition
     const {
@@ -1762,10 +1766,10 @@ async function init() {
     // --- HTML-level `:for` definition handling ---
     // (block intentionally removed or commented out to skip HTML-level jumps)
     /*
-    if (html && position.line >= hStart && position.line <= hEnd) {
-      // ... omitted HTML-level jump logic ...
-    }
-    */
+  if (html && position.line >= hStart && position.line <= hEnd) {
+    // ... omitted HTML-level jump logic ...
+  }
+  */
     // --- End HTML-level `:for` definition handling ---
     if (html && position.line >= hStart && position.line <= hEnd) {
       const htmlTextDoc = TextDocument.create(uri, "html", doc.version, html);
@@ -1793,11 +1797,6 @@ async function init() {
         );
         return [Location.create(uri, Range.create(startPos, endPos))];
       }
-      // const templateContext = getLunasTemplateContext(
-      //   htmlTextDoc,
-      //   relPosInHtmlBlock,
-      //   htmlService,
-      // );
 
       if (templateContext && virtualPath) {
         const originalScriptContent = scriptContents.get(virtualPath);
@@ -1825,7 +1824,8 @@ async function init() {
           );
           return null;
         }
-        const { tempScript, expressionOffsetInTempScript, blockMappings } = prep;
+        const { tempScript, expressionOffsetInTempScript, blockMappings } =
+          prep;
         const originalVersion = scriptVersions.get(virtualPath) || 0;
         scriptContents.set(virtualPath, tempScript);
         scriptVersions.set(virtualPath, originalVersion + 1);
@@ -1867,35 +1867,42 @@ async function init() {
               let mapped = blockMappings.find(
                 (m) =>
                   def.textSpan.start >= m.tsPos[0] &&
-                  def.textSpan.start < m.tsPos[1]
+                  def.textSpan.start < m.tsPos[1],
               );
               // Enhanced loop header mapping fallback
               if (mapped && mapped.value.startsWith("let [")) {
                 // Try to more precisely map the variable name in the for-header
-                // Extract variable name from def.name
                 const varName = def.name;
                 const offsetInCond = mapped.value.indexOf(varName);
                 const origLine = mapped.originalPos[0];
-                const origChar = mapped.originalPos[1] + (offsetInCond >= 0 ? offsetInCond : 0);
-                const htmlStart = Position.create(hStart + origLine, htmlIndent + origChar);
+                const origChar =
+                  mapped.originalPos[1] +
+                  (offsetInCond >= 0 ? offsetInCond : 0);
+                const htmlStart = Position.create(
+                  hStart + origLine,
+                  htmlIndent + origChar,
+                );
                 const htmlEnd = Position.create(
                   hStart + origLine,
-                  htmlIndent + origChar + varName.length
+                  htmlIndent + origChar + varName.length,
                 );
                 results.push(
-                  Location.create(uri, Range.create(htmlStart, htmlEnd))
+                  Location.create(uri, Range.create(htmlStart, htmlEnd)),
                 );
                 continue;
               }
               if (mapped) {
                 const [origLine, origChar] = mapped.originalPos;
-                const htmlStart = Position.create(hStart + origLine, htmlIndent + origChar);
+                const htmlStart = Position.create(
+                  hStart + origLine,
+                  htmlIndent + origChar,
+                );
                 const htmlEnd = Position.create(
                   hStart + origLine,
-                  htmlIndent + origChar + mapped.value.length
+                  htmlIndent + origChar + mapped.value.length,
                 );
                 results.push(
-                  Location.create(uri, Range.create(htmlStart, htmlEnd))
+                  Location.create(uri, Range.create(htmlStart, htmlEnd)),
                 );
                 continue;
               }
@@ -1905,13 +1912,11 @@ async function init() {
                 range: Range.create(
                   defStart.line -
                     totalAdditionalPartLines +
-                    (extractScript(text).startLine + 1) -
-                    1,
+                    extractScript(text).startLine,
                   defStart.character + INDENT_SIZE,
                   defEnd.line -
                     totalAdditionalPartLines +
-                    (extractScript(text).startLine + 1) -
-                    1,
+                    extractScript(text).startLine,
                   defEnd.character + INDENT_SIZE,
                 ),
               });
@@ -1928,17 +1933,30 @@ async function init() {
     }
 
     // Script Block Definition
+    console.log("[Lunas Debug] Script Block Definition check");
     const { script, startLine: scriptDeclLine } = extractScript(text);
     if (script && virtualPath) {
-      const scriptContentActualStartLine = scriptDeclLine + 1;
+      // Include the first line of actual script content (no +1)
+      const scriptContentActualStartLine = scriptDeclLine;
       const scriptLines = script.split("\n");
+      // End line is startLine + number of lines
       const scriptContentActualEndLine =
-        scriptContentActualStartLine + scriptLines.length - 1;
+        scriptContentActualStartLine + scriptLines.length;
+
+      console.log(
+        "[Lunas Debug] Script block lines:",
+        scriptContentActualStartLine,
+        "-",
+        scriptContentActualEndLine,
+        "Cursor:",
+        position.line,
+      );
 
       if (
         position.line >= scriptContentActualStartLine &&
         position.line <= scriptContentActualEndLine
       ) {
+        console.log("[Lunas Debug] Cursor is inside script block");
         const localPositionResult = getLocationInBlock(
           text,
           scriptDeclLine,
@@ -1951,19 +1969,32 @@ async function init() {
           },
           totalAdditionalPartChars,
         );
+        console.log("[Lunas Debug] localPositionResult:", localPositionResult);
+
         if (localPositionResult) {
           const definitions = tsService.getDefinitionAtPosition(
             virtualPath,
             localPositionResult.localPosition.offset,
           );
+          console.log(
+            "[Lunas Debug] tsService.getDefinitionAtPosition returned:",
+            definitions,
+          );
+
           if (definitions) {
             const results: Location[] = [];
             const program = tsService.getProgram();
-            if (!program) return null;
+            if (!program) {
+              console.log("[Lunas Debug] No TS program found");
+              return null;
+            }
 
             for (const def of definitions) {
               const defSourceFile = program.getSourceFile(def.fileName);
-              if (!defSourceFile) continue;
+              if (!defSourceFile) {
+                console.log("[Lunas Debug] No source file for:", def.fileName);
+                continue;
+              }
               const defStart = defSourceFile.getLineAndCharacterOfPosition(
                 def.textSpan.start,
               );
@@ -1971,35 +2002,68 @@ async function init() {
                 def.textSpan.start + def.textSpan.length,
               );
 
+              console.log(
+                "[Lunas Debug] Definition:",
+                def.fileName,
+                "start:",
+                defStart,
+                "end:",
+                defEnd,
+                "textSpan:",
+                def.textSpan,
+              );
+
               if (def.fileName === virtualPath) {
-                if (def.textSpan.start < totalAdditionalPartChars) continue; // Skip @Input defs
+                if (def.textSpan.start < totalAdditionalPartChars) {
+                  console.log(
+                    "[Lunas Debug] Skipping @Input definition at",
+                    def.textSpan.start,
+                  );
+                  continue; // Skip @Input defs
+                }
                 results.push({
                   uri: uri,
                   range: Range.create(
                     defStart.line -
                       totalAdditionalPartLines +
-                      scriptContentActualStartLine -
-                      1,
+                      scriptContentActualStartLine,
                     defStart.character + INDENT_SIZE,
                     defEnd.line -
                       totalAdditionalPartLines +
-                      scriptContentActualStartLine -
-                      1,
+                      scriptContentActualStartLine,
                     defEnd.character + INDENT_SIZE,
                   ),
                 });
+                console.log(
+                  "[Lunas Debug] Added script block location:",
+                  results[results.length - 1],
+                );
               } else {
                 results.push({
                   uri: pathToFileURL(def.fileName).toString(),
                   range: Range.create(defStart, defEnd),
                 });
+                console.log(
+                  "[Lunas Debug] Added external file location:",
+                  results[results.length - 1],
+                );
               }
             }
+            console.log("[Lunas Debug] Returning definition results:", results);
             return results;
+          } else {
+            console.log("[Lunas Debug] No definitions found by TS");
           }
+        } else {
+          console.log("[Lunas Debug] localPositionResult is null");
         }
+      } else {
+        console.log("[Lunas Debug] Cursor is NOT inside script block");
       }
+    } else {
+      console.log("[Lunas Debug] No script or virtualPath");
     }
+
     return null;
   });
 
