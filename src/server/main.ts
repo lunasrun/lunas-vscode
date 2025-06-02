@@ -79,6 +79,14 @@ function parseTemplateBlocks(
 ): BlkNode[] {
   const html = htmlDoc.getText();
 
+  // Compute ranges of all HTML comments to filter out interpolation inside them
+  const commentRanges: { start: number; end: number }[] = [];
+  const commentRegex = /<!--[\s\S]*?-->/g;
+  let commentMatch: RegExpExecArray | null;
+  while ((commentMatch = commentRegex.exec(html))) {
+    commentRanges.push({ start: commentMatch.index, end: commentMatch.index + commentMatch[0].length });
+  }
+
   // 1. Collect all interpolation expressions
   const exprMatches: {
     value: string;
@@ -89,6 +97,11 @@ function parseTemplateBlocks(
   const interpRegex = /\$\{([^}]+)\}/g;
   let match: RegExpExecArray | null;
   while ((match = interpRegex.exec(html))) {
+    const exprGlobalStart = match.index;
+    // skip if inside any comment
+    if (commentRanges.some(r => exprGlobalStart >= r.start && exprGlobalStart < r.end)) {
+      continue;
+    }
     // Trim expression and adjust offsets to trimmed region
     const raw = match[1];
     const exprStartOffset = match.index + 2;
