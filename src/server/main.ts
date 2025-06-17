@@ -84,7 +84,10 @@ function parseTemplateBlocks(
   const commentRegex = /<!--[\s\S]*?-->/g;
   let commentMatch: RegExpExecArray | null;
   while ((commentMatch = commentRegex.exec(html))) {
-    commentRanges.push({ start: commentMatch.index, end: commentMatch.index + commentMatch[0].length });
+    commentRanges.push({
+      start: commentMatch.index,
+      end: commentMatch.index + commentMatch[0].length,
+    });
   }
 
   // 1. Collect all interpolation expressions
@@ -99,7 +102,11 @@ function parseTemplateBlocks(
   while ((match = interpRegex.exec(html))) {
     const exprGlobalStart = match.index;
     // skip if inside any comment
-    if (commentRanges.some(r => exprGlobalStart >= r.start && exprGlobalStart < r.end)) {
+    if (
+      commentRanges.some(
+        (r) => exprGlobalStart >= r.start && exprGlobalStart < r.end,
+      )
+    ) {
       continue;
     }
     // Trim expression and adjust offsets to trimmed region
@@ -465,6 +472,7 @@ async function init() {
       const extensionDir = path.dirname(__dirname);
       const alternativeSrcRoot = path.join(
         extensionDir,
+        "../",
         "node_modules",
         "lunas",
         "dist",
@@ -554,6 +562,7 @@ async function init() {
           }; // allowJs might be useful
     },
     getDefaultLibFileName: (options) => {
+      const extensionDir = path.dirname(__dirname);
       const userTSLib = path.join(
         process.env.PROJECT_ROOT ?? process.cwd(),
         "node_modules",
@@ -561,7 +570,7 @@ async function init() {
         "lib",
       );
       const fallbackTSLib = path.join(
-        __dirname,
+        extensionDir,
         "..",
         "node_modules",
         "typescript",
@@ -570,6 +579,10 @@ async function init() {
       const libFile = ts.getDefaultLibFileName(options);
       const userLibPath = path.join(userTSLib, libFile);
       const fallbackLibPath = path.join(fallbackTSLib, libFile);
+      console.log(
+        "fs.existsSync(userLibPath) ? userLibPath : fallbackLibPath;",
+        fs.existsSync(userLibPath) ? userLibPath : fallbackLibPath,
+      );
       return fs.existsSync(userLibPath) ? userLibPath : fallbackLibPath;
     },
     readFile: (fileName) =>
